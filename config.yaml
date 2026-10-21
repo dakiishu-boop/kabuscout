@@ -1,0 +1,55 @@
+# KabuScout 設定ファイル
+# ${ENV_VAR} 形式で環境変数を参照できます（.env ファイルにも書けます）
+
+universe:
+  # 対象市場（JPXの「市場・商品区分」に部分一致）
+  markets: ["プライム", "スタンダード", "グロース"]
+  # 流動性フィルタ：20日平均売買代金（円）
+  min_turnover_jpy: 100000000
+  min_price: 100
+  # 地合い判定に使う指数代わりのETF（1306 = TOPIX連動ETF）
+  market_proxy: "1306"
+  refresh_days: 7
+
+data:
+  db_path: data/kabuscout.db
+  model_dir: data/models
+  report_dir: reports
+  history_years: 4
+  batch_size: 100
+
+labeling:
+  # トリプルバリア法：エントリー（翌日寄付き）から horizon 営業日以内に
+  # 利確ライン（+tp_atr × ATR）に先に到達したら「勝ち」
+  horizon_days: 10
+  tp_atr: 2.0
+  sl_atr: 1.0
+
+screening:
+  top_n: 15
+  # 決算予定日を調べる上位銘柄数（Yahoo に1銘柄ずつ問い合わせるため少なめに）
+  earnings_check_n: 15
+
+learning:
+  # 何営業日ごとに再学習するか
+  retrain_every_days: 5
+  # 学習データの新しさ重み（半減期・日）
+  recency_half_life_days: 365
+  holdout_fraction: 0.2
+  min_train_samples: 2000
+
+paper_trading:
+  enabled: true
+  capital_jpy: 3000000
+  max_positions: 5
+  # 毎日、順位の高い順に最大何銘柄を新規で買うか
+  picks_per_day: 2
+  # AI勝率予測の下限（0 なら順位だけで選ぶ）
+  min_prob: 0
+  lot_size: 100
+
+notify:
+  discord_webhook: ${DISCORD_WEBHOOK_URL}
+  ntfy_topic: ${NTFY_TOPIC}
+  ntfy_server: https://ntfy.sh
+  macos: true

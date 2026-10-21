@@ -1,0 +1,59 @@
+# パソコンが閉じていても毎営業日の引け後にクラウド(GitHub Actions)でスクリーニング → スマホに通知
+# 必要な Secrets: DISCORD_WEBHOOK_URL と NTFY_TOPIC のどちらか（両方でも可）
+name: daily-screening
+
+on:
+  schedule:
+    - cron: "45 7 * * 1-5"   # 16:45 JST（GitHub の混雑で数十分遅れることがあります）
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "追加オプション（例: --force --retrain）"
+        required: false
+        default: ""
+
+concurrency: daily-screening
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # 株価DB・モデル・成績をキャッシュで引き継ぐ（毎日使われる限り消えない）
+      - uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: kabuscout-data-${{ github.run_id }}
+          restore-keys: kabuscout-data-
+
+      - name: Run screening
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PYTHONWARNINGS: ignore
+          ARGS: ${{ github.event.inputs.args }}
+        run: python -m kabuscout daily $ARGS
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: kabuscout-data-${{ github.run_id }}
+
+      # 手元のダッシュボードで見たいとき用（scripts/pull_cloud_data.sh で取得）
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kabuscout-data
+          path: |
+            data/kabuscout.db
+            data/models/
+            reports/
+          retention-days: 7

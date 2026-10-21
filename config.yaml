@@ -87,6 +87,14 @@ research:
   crisis_tolerance: 0.005
   # 有意水準（累計の試行回数で割る = Bonferroni 補正）
   alpha: 0.05
+  # 売買ルールの探索範囲（利確・損切はATRの何倍か、最長保有日数）
+  plan_grid:
+    tp_atr: [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0, 8.0]
+    sl_atr: [0.75, 1.0, 1.5, 2.0, 3.0]
+    horizon_days: [5, 10, 15, 20, 30, 40, 60]
+  # 売買ルールの比較は「1枠あたりの年率換算」。金庫を開けるたびの上乗せ・危機時の許容悪化幅も年率で
+  plan_vault_margin: 0.01
+  plan_crisis_tolerance: 0.05
 
 backtest:
   start_year: 2008

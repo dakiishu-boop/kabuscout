@@ -443,6 +443,24 @@ function renderAI() {
         <td class="num ${cls(r.inc_score)}">${pct(r.inc_score, 2)}<div class="muted small">${r.profitable ? "実用水準" : "コスト負け"}</div></td>
         <td class="small" style="white-space:normal;min-width:14em">${r.adopted ? "✅ " : ""}${esc(r.reason)}</td></tr>`).join("") +
       `</tbody></table></div><p class="small muted">「現行の実力」は平常時の年ごとの1取引あたり損益（コスト控除後）の中央値。</p>`;
+    const P = R.plan;
+    if (P) {
+      const pl = p => `利確 +${p.tp_atr}ATR ／ 損切 −${p.sl_atr}ATR ／ 最長${p.horizon_days}日`;
+      h += `<h2>売買ルールの研究（利確・損切・保有日数）</h2>
+        <div class="kpis">
+          <div class="card kpi" style="grid-column:span 2"><div class="k">現在のルール</div><div class="v" style="font-size:16px">${pl(P.incumbent)}</div>
+            <div class="s">1枠あたり年率換算 <span class="${cls(P.inc_score)}">${pct(P.inc_score)}</span>（平常時の年ごとの中央値・コスト控除後）／ 勝率 ${pct0(P.inc_win)} ／ 平均${(P.inc_days || 0).toFixed(1)}日保有</div></div>
+          <div class="card kpi" style="grid-column:span 2"><div class="k">今回の最有力候補</div><div class="v" style="font-size:16px">${P.candidate ? pl(P.candidate) : "-"}</div>
+            <div class="s">${P.candidate ? `年率換算 <span class="${cls(P.cand_score)}">${pct(P.cand_score)}</span> ／ ` : ""}${P.adopted ? "✅ " : ""}${esc(P.reason)}</div></div>
+        </div>
+        <p class="small muted">${P.trials}通り（累計${P.cum_trials}）を試行。保有日数が違うと1回あたりの損益は比べられないため、「損益合計 ÷ 保有日数合計 × 250」の年率換算で比較。
+          候補は、年ごとの安定性・多重検定の補正・危機局面での悪化チェック・金庫での最終確認をすべて通った場合だけ採用されます。</p>
+        <div class="card tbl"><table><thead><tr><th>利確</th><th>損切</th><th class="num">最長</th><th class="num">年率換算</th><th class="num hide-sm">プラスの年</th><th class="num">勝率</th><th class="num hide-sm">平均保有</th><th class="num hide-sm">危機時</th></tr></thead><tbody>` +
+        P.top.map(t => { const cur = JSON.stringify(t.plan) === JSON.stringify(P.incumbent);
+          return `<tr${cur ? ' style="font-weight:700"' : ""}><td>+${t.plan.tp_atr}ATR</td><td>−${t.plan.sl_atr}ATR</td><td class="num">${t.plan.horizon_days}日</td>
+          <td class="num ${cls(t.median)}">${pct(t.median)}</td><td class="num hide-sm">${pct0(t.pos)}</td><td class="num">${pct0(t.win)}</td><td class="num hide-sm">${(t.days || 0).toFixed(1)}日</td><td class="num hide-sm ${cls(t.crisis)}">${pct(t.crisis)}</td></tr>`; }).join("") +
+        `</tbody></table></div><p class="small muted">上位12通りを表示。</p>`;
+    }
     if (R.eras && R.eras.length) {
       const eras = [...new Set(R.eras.map(e => e.era))];
       const cell = (k, era, rg) => { const e = R.eras.find(x => x.strategy === k && x.era === era && x.regime === rg); return e ? `<span class="${cls(e.net)}">${pct(e.net, 2)}</span>` : "-"; };

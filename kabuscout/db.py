@@ -49,4 +49,8 @@ def connect(path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(path), timeout=60)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(paper_positions)")}
+    if "horizon" not in cols:  # 売買ルールが途中で変わっても、建てた時のルールで手仕舞うため
+        con.execute("ALTER TABLE paper_positions ADD COLUMN horizon INTEGER")
+        con.commit()
     return con

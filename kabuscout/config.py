@@ -1,6 +1,7 @@
 """設定の読み込み。config.yaml + 環境変数（.env も可）。"""
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -42,4 +43,11 @@ def load_config(path: Path | None = None) -> dict:
     cfg["data"]["model_dir"].mkdir(parents=True, exist_ok=True)
     cfg["data"]["report_dir"].mkdir(parents=True, exist_ok=True)
     cfg["data"]["db_path"].parent.mkdir(parents=True, exist_ok=True)
+    # 研究ループが採用した売買ルール（利確・損切・保有日数）があれば config.yaml の値より優先
+    learned = cfg["data"]["db_path"].parent / "strategy_params.json"
+    if learned.exists():
+        plan = json.loads(learned.read_text()).get("plan")
+        if plan:
+            cfg["labeling"].update(plan)
+            cfg["labeling"]["learned"] = True
     return cfg

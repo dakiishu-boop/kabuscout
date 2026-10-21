@@ -178,6 +178,14 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
         for r in summary["results"]:
             mark = "✅" if r["adopted"] else "・"
             lines.append(f"{mark} **{r['name']}**（{r['trials']}通り／累計{r['cum_trials']}）: {r['reason']}")
+        P = summary.get("plan")
+        if P:
+            fmt = lambda p: f"利確+{p['tp_atr']}ATR／損切−{p['sl_atr']}ATR／最長{p['horizon_days']}日"
+            lines += ["", f"{'✅' if P['adopted'] else '・'} **売買ルール**（{P['trials']}通り／累計{P['cum_trials']}）: {P['reason']}",
+                      f"　現行 {fmt(P['incumbent'])}：1枠あたり年率 {P['inc_score']:+.1%}"]
+            if P.get("candidate"):
+                lines.append(f"　最有力 {fmt(P['candidate'])}：年率 {P['cand_score']:+.1%}")
+            adopted = adopted + ([P] if P["adopted"] else [])
         embeds.append(dict(
             title="🔬 研究ループ: " + (f"{len(adopted)}つの戦略の条件を更新" if adopted else "条件の更新なし（現行が最善 or 改善が偶然の範囲）"),
             url=url or None, color=0x2CA02C if adopted else 0x808080, description="\n".join(lines)[:4000]))

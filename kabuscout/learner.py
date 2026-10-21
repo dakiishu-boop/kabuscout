@@ -41,47 +41,59 @@ CANDIDATES = [
 
 
 # ---------------------------------------------------------------- labels
-def label(ind: dict, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """トリプルバリア法でラベル付け。complete=False は結果確定前。"""
-    H = cfg["labeling"]["horizon_days"]
-    k_tp, k_sl = cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"]
-    o, h, l, c = (ind[k].to_numpy() for k in ("open", "high", "low", "close"))
+def forward_paths(o, h, l, c, ti, ci, H: int) -> dict:
+    """各シグナルの「翌日寄付き(エントリー)」と、その後 H 日分の四本値をまとめて取り出す。
+    売買ルールを何通り試しても、この表を使い回せば価格データを読み直さずに済む。"""
     T = o.shape[0]
-    ti, ci = df["_ti"].to_numpy(), df["_ci"].to_numpy()
-    n = len(df)
-
-    nxt = np.minimum(ti + 1, T - 1)
-    entry = np.where(ti + 1 < T, o[nxt, ci], np.nan)
-    atr = df["atr"].to_numpy()
-    tp, sl = entry + k_tp * atr, entry - k_sl * atr
-
-    done = np.zeros(n, bool)
-    lab = np.zeros(n)
-    exit_px = np.full(n, np.nan)
-    exit_k = np.full(n, np.nan)
+    entry = np.where(ti + 1 < T, o[np.minimum(ti + 1, T - 1), ci], np.nan)
+    fo, fh, fl, fc = (np.full((H, len(ti)), np.nan, dtype="float32") for _ in range(4))
     for k in range(1, H + 1):
         idx = ti + k
         ok = idx < T
         ii = np.minimum(idx, T - 1)
-        hi, lo, op = h[ii, ci], l[ii, ci], o[ii, ci]
+        for arr, src in ((fo, o), (fh, h), (fl, l), (fc, c)):
+            arr[k - 1] = np.where(ok, src[ii, ci], np.nan)
+    return dict(entry=entry, o=fo, h=fh, l=fl, c=fc)
+
+
+def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
+    """トリプルバリア法: 利確(+k_tp×ATR)・損切(-k_sl×ATR)・H日経過のどれが先か。
+    同じ日に両方に触れたら保守的に損切扱い。2日目以降に窓を開けて超えたら寄付きで約定。"""
+    entry = p["entry"]
+    n = len(entry)
+    tp, sl = entry + k_tp * atr, entry - k_sl * atr
+    done = np.zeros(n, bool)
+    lab = np.zeros(n, dtype="int8")
+    exit_px = np.full(n, np.nan)
+    exit_k = np.full(n, np.nan)
+    for k in range(1, H + 1):
+        hi, lo, op = p["h"][k - 1], p["l"][k - 1], p["o"][k - 1]
+        ok = ~np.isnan(hi)
         hit_sl = ok & ~done & (lo <= sl)
-        hit_tp = ok & ~done & (hi >= tp) & ~hit_sl  # 同日両方なら保守的に損切扱い
+        hit_tp = ok & ~done & (hi >= tp) & ~hit_sl
         exit_px = np.where(hit_sl, np.minimum(op, sl) if k > 1 else sl, exit_px)
         exit_px = np.where(hit_tp, np.maximum(op, tp) if k > 1 else tp, exit_px)
         lab = np.where(hit_tp, 1, lab)
         exit_k = np.where(hit_sl | hit_tp, k, exit_k)
         done |= hit_sl | hit_tp
-    end = ti + H
-    timeout = ~done & (end < T)
-    exit_px = np.where(timeout, c[np.minimum(end, T - 1), ci], exit_px)
+    last = p["c"][H - 1]
+    timeout = ~done & ~np.isnan(last)
+    exit_px = np.where(timeout, last, exit_px)
     exit_k = np.where(timeout, H, exit_k)
+    complete = (done | timeout) & np.isfinite(entry) & np.isfinite(atr)
+    return dict(entry=entry, tp=tp, sl=sl, label=lab, ret=exit_px / entry - 1, exit_days=exit_k, complete=complete)
 
+
+def label(ind: dict, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """現在の売買ルールでラベル付け。complete=False は結果確定前。"""
+    H = cfg["labeling"]["horizon_days"]
+    o, h, l, c = (ind[k].to_numpy() for k in ("open", "high", "low", "close"))
+    p = forward_paths(o, h, l, c, df["_ti"].to_numpy(), df["_ci"].to_numpy(), H)
+    r = outcomes(p, df["atr"].to_numpy(), cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"], H)
     df = df.copy()
-    df["entry"], df["tp"], df["sl"] = entry, tp, sl
-    df["label"] = lab.astype(int)
-    df["ret"] = exit_px / entry - 1
-    df["exit_days"] = exit_k
-    df["complete"] = (done | timeout) & np.isfinite(entry) & np.isfinite(atr)
+    for k in ("entry", "tp", "sl", "label", "ret", "exit_days", "complete"):
+        df[k] = r[k]
+    df["label"] = df["label"].astype(int)
     return df
 
 

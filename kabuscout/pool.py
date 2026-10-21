@@ -24,12 +24,17 @@ log = logging.getLogger(__name__)
 POOL_VERSION = 1
 FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
-LOOKAHEAD_DAYS = 45  # ラベル付けに必要な先の期間（暦日）
 RECENT_DAYS = 200    # 毎日計算し直す直近期間（暦日）
 
 
+def _lookahead(cfg: dict) -> int:
+    """ラベル付けに必要な先の期間（暦日）。最長保有日数から決める。"""
+    return int(cfg["labeling"]["horizon_days"] * 1.6) + 20
+
+
 def _signature(cfg: dict) -> str:
-    key = json.dumps(dict(v=POOL_VERSION, loose=loose_params(), lab=cfg["labeling"],
+    key = json.dumps(dict(v=POOL_VERSION, loose=loose_params(),
+                          lab={k: cfg["labeling"][k] for k in ("horizon_days", "tp_atr", "sl_atr")},
                           start=cfg["data"]["history_start"], uni=cfg["universe"]), sort_keys=True, default=str)
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
@@ -87,7 +92,7 @@ def build_full(store, cfg: dict, uni: pd.DataFrame) -> pd.DataFrame:
         y2 = min(y + pd.DateOffset(years=3), end)
         log.info("  シグナル表を作成中: %s〜%s", y.date(), y2.date())
         _, df = build_window(store, cfg, uni, (y - pd.Timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d"),
-                             (y2 + pd.Timedelta(days=LOOKAHEAD_DAYS)).strftime("%Y-%m-%d"),
+                             (y2 + pd.Timedelta(days=_lookahead(cfg))).strftime("%Y-%m-%d"),
                              keep_from=y.strftime("%Y-%m-%d"), keep_to=y2.strftime("%Y-%m-%d"))
         parts.append(df)
         y = y2

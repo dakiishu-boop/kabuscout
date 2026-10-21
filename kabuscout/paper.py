@@ -57,8 +57,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
             con.execute("UPDATE paper_positions SET status='cancelled', reason='資金不足' WHERE id=?", (p["id"],))
             continue
         tp, sl = entry + k_tp * p["atr"], entry - k_sl * p["atr"]
-        con.execute("UPDATE paper_positions SET status='open', entry_date=?, entry=?, shares=?, tp=?, sl=? WHERE id=?",
-                    (ed.strftime("%Y-%m-%d"), entry, shares, tp, sl, p["id"]))
+        con.execute("UPDATE paper_positions SET status='open', entry_date=?, entry=?, shares=?, tp=?, sl=?, horizon=? WHERE id=?",
+                    (ed.strftime("%Y-%m-%d"), entry, shares, tp, sl, H, p["id"]))
         events.append(f"買 {p['code']} {p['name']} {shares}株 @{entry:,.0f}")
 
     # 2) 保有中 → 利確/損切/期限の判定（毎回エントリー日から再生するので実行漏れがあっても正しい）
@@ -66,7 +66,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
     for _, p in pos.iterrows():
         if p["code"] not in ind["close"].columns:  # 上場廃止・データ欠落
             continue
-        ex_date, ex_px, why, held = _simulate(ind, p["code"], pd.Timestamp(p["entry_date"]), p["tp"], p["sl"], H)
+        h = int(p["horizon"]) if pd.notna(p.get("horizon")) else H
+        ex_date, ex_px, why, held = _simulate(ind, p["code"], pd.Timestamp(p["entry_date"]), p["tp"], p["sl"], h)
         if ex_date is None:
             con.execute("UPDATE paper_positions SET days_held=? WHERE id=?", (held, p["id"]))
             continue

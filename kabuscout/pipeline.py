@@ -178,6 +178,12 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     if pl is None:
         raise SystemExit("シグナル表がありません。先に daily を実行してください")
     summary = rs.run(con, cfg, trials=trials, budget_min=budget_min) if research else None
+    if summary and summary.get("plan_changed"):
+        # 売買ルールが変わったら、新しいルールで25年分のラベルを付け直す
+        from .config import load_config
+        cfg = load_config()
+        log.info("売買ルールを更新: %s → シグナル表を作り直します", summary["plan"]["candidate"])
+        pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
     ds = dataset(cfg, pl)
     if research:  # 週1回は必ず再学習（新旧モデルの対決は train 内で行う）
         log.info("再学習中…" + ("（戦略の条件が更新されたため）" if summary and summary["changed"] else ""))

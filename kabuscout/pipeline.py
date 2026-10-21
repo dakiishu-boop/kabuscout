@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from . import data, learner, notify, paper, pool, regimes, report, site
+from . import data, earnings, flows, learner, notify, paper, pool, regimes, report, site
 from .db import connect
 from .strategies import apply_flags, load_params, reasons
 
@@ -148,6 +148,9 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     n_e = cfg["screening"]["earnings_check_n"]
     top["earnings_days"] = [(_earnings_days(c, last) if i < n_e else np.nan) for i, c in enumerate(top["code"])]
     top["rank"] = range(1, len(top) + 1)
+    snap = flows.snapshot(cfg)
+    for col in ("margin_ratio", "buy_pct", "sell_pct", "buy_pct_chg5", "short_total"):
+        top[col] = top["code"].map(snap[col]) if col in snap else np.nan
     _store_live(con, top, data_date)
     _label_live(con, ds)
 
@@ -167,6 +170,7 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     con.commit()
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
     print("\n" + md)
+    collect_extra(cfg, uni)
     return dict(date=data_date, top=top, n_signals=len(today))
 
 
@@ -192,6 +196,17 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     site.build(con, cfg)
     if notify_on:
         notify.send_research(cfg, summary, bt)
+
+
+def collect_extra(cfg: dict, uni: pd.DataFrame) -> None:
+    """通知の後に、翌日以降に使う追加データを集める（初回の大量取得で通知が遅れないように）。"""
+    lim = cfg.get("earnings", {}).get("max_minutes", 30)
+    for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=lim)),
+                     ("需給データ", lambda: flows.collect(cfg))):
+        try:
+            fn()
+        except Exception as e:
+            log.warning("%sの更新に失敗: %s", name, e)
 
 
 def _drop_legacy_prices(con) -> None:

@@ -46,6 +46,14 @@ def _prices(cfg: dict, codes: list[str], n: int = 130) -> dict:
     return out
 
 
+def _sources(cfg: dict) -> dict:
+    from . import earnings, flows
+    ev = earnings.load(cfg)
+    return dict(flows=flows.history_days(cfg),
+                earnings=None if ev is None else dict(codes=int(ev["code"].nunique()), events=int(len(ev)),
+                                                      since=str(ev["date"].min())[:10]))
+
+
 def collect(con, cfg: dict) -> dict:
     q = lambda s, p=(): pd.read_sql(s, con, params=p)
     sums = q("SELECT data_date, json FROM summaries ORDER BY data_date DESC LIMIT 60")
@@ -69,6 +77,7 @@ def collect(con, cfg: dict) -> dict:
     load_json = lambda name: json.loads((base / name).read_text()) if (base / name).exists() else None
     return dict(
         backtest=load_json("backtest.json"), research=load_json("research.json"), events=regimes.events_table(),
+        data_sources=_sources(cfg),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
         summaries=summaries, signals=_records(signals), positions=_records(positions),
         models=_records(models), stats=_records(stats), prices=prices, last_close=last_close,

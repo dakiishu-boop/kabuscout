@@ -31,7 +31,7 @@ def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_da
             prob=None if pd.isna(r["prob"]) else float(r["prob"]),
             close=float(r["close"]), tp=float(r["tp"]), sl=float(r["sl"]),
             earnings_days=None if pd.isna(r["earnings_days"]) else int(r["earnings_days"]),
-            reasons=r["reasons"],
+            reasons=r["reasons"], flows=_flows_text(r),
         ))
     live = pd.read_sql("SELECT label, ret FROM signals WHERE labeled=1 AND rank<=5", con)
     model = None
@@ -62,6 +62,20 @@ def crisis_line(rep: dict) -> str:
     return s + " ペーパートレードの新規買いは1銘柄に絞っています。"
 
 
+def _flows_text(r) -> str:
+    """需給の参考情報（JPXの日々の信用残・大口空売り残高）。"""
+    parts = []
+    g = lambda k: r.get(k) if k in r and r.get(k) == r.get(k) else None
+    if g("margin_ratio") is not None:
+        parts.append(f"信用倍率{g('margin_ratio'):.1f}倍")
+    if g("buy_pct") is not None:
+        chg = g("buy_pct_chg5")
+        parts.append(f"買残 上場比{g('buy_pct'):.1%}" + (f"（1週間で{chg:+.1%}）" if chg else ""))
+    if g("short_total") is not None:
+        parts.append(f"大口空売り{g('short_total'):.1%}")
+    return "・".join(parts)
+
+
 def _pct(a, b):
     return a / b - 1
 
@@ -85,6 +99,8 @@ def to_markdown(rep: dict) -> str:
         L.append(f"   終値 {p['close']:,.0f} → 利確 {p['tp']:,.0f} ({_pct(p['tp'], p['close']):+.1%}) / "
                  f"損切 {p['sl']:,.0f} ({_pct(p['sl'], p['close']):+.1%})")
         L.append(f"   {p['reasons']}")
+        if p.get("flows"):
+            L.append(f"   需給: {p['flows']}")
     if rep["model"]:
         mo = rep["model"]
         L += ["", f"AI v{mo['version']}（{mo['edge']}）: 上位推奨の期待値 {mo['top_ret']:+.2%} / 勝率 {mo['top_win']:.0%}"
@@ -121,7 +137,8 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
             value=(f"🏷️ {' / '.join(p['strategies'])}\n"
                    f"```\n終値 {p['close']:>8,.0f}\n利確 {p['tp']:>8,.0f} ({_pct(p['tp'], p['close']):+.1%})\n"
                    f"損切 {p['sl']:>8,.0f} ({_pct(p['sl'], p['close']):+.1%})```"
-                   f"{prob}[Yahoo]({yahoo})\n*{p['reasons']}*")[:1024],
+                   f"{prob}[Yahoo]({yahoo})\n*{p['reasons']}*"
+                   + (f"\n📊 {p['flows']}" if p.get("flows") else ""))[:1024],
             inline=False))
     picks = dict(title=f"🎯 注目銘柄 TOP{len(fields)}", color=0xE377C2, fields=fields)
 

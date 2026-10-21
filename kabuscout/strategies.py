@@ -93,6 +93,12 @@ def rs_dip(i, p):
             & _between(i["dev25"], -p["band"], p["band"]))
 
 
+def earnings_drift(i, p):
+    # 決算に市場が好反応した銘柄は、その後もしばらく上がりやすい（決算後ドリフト）
+    return ((i["earn_age"] >= 0) & (i["earn_age"] <= p["age"]) & (i["earn_react"] >= p["react"])
+            & (i["earn_surprise"].fillna(1e9) >= p["surp"]) & (i["earn_vol"] >= p["vol"]))
+
+
 STRATEGIES: list[Strategy] = [
     Strategy("pullback_25", "押し目(25日線)", "上昇トレンド中、出来高を細らせながら25日線まで調整し反転の兆し", pullback_25, dict(
         run=(0.02, 0.10, 0.05, 0.02), dev_lo=(-0.06, -0.01, -0.03, -0.06), dev_hi=(0.0, 0.04, 0.015, 0.04),
@@ -115,6 +121,8 @@ STRATEGIES: list[Strategy] = [
         rank=(0.02, 0.15, 0.05, 0.15))),
     Strategy("rs_dip", "地合い逆行の押し目", "市場が下げる中でも強い銘柄が25日線付近で踏みとどまる", rs_dip, dict(
         mkt=(-0.04, -0.01, -0.02, -0.01), rs=(0.05, 0.20, 0.10, 0.05), band=(0.01, 0.05, 0.03, 0.05))),
+    Strategy("earnings_drift", "決算好反応", "決算発表に市場が好反応（市場比+5%以上・大商い）した銘柄の、発表後数日以内", earnings_drift, dict(
+        age=(1, 10, 5, 10), react=(0.02, 0.15, 0.05, 0.02), surp=(-50.0, 50.0, 0.0, -50.0), vol=(1.0, 3.0, 1.5, 1.0))),
 ]
 BY_KEY = {s.key: s for s in STRATEGIES}
 STRATEGY_NAMES = {s.key: s.name for s in STRATEGIES}
@@ -175,6 +183,9 @@ def reasons(row: pd.Series, keys: list[str]) -> str:
         parts.append(f"対日経平均 60日{row['rs60']:+.0%}")
     if "squeeze" in keys:
         parts.append("BB幅が半年で最小圏")
+    if row.get("earn_age") == row.get("earn_age") and row.get("earn_age", 99) <= 10:
+        s = row.get("earn_surprise")
+        parts.append(f"決算発表から{int(row['earn_age']) + 1}営業日・市場比{row['earn_react']:+.1%}" + (f"・サプライズ{s:+.0f}%" if s == s and s is not None else ""))
     if row.get("dist_high52", -1) > -0.03 and "breakout_52w" not in keys:
         parts.append("52週高値圏")
     return "・".join(parts)

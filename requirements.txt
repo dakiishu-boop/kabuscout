@@ -8,3 +8,5 @@ requests
 openpyxl
 jpholiday
 pyarrow
+pypdf
+lxml

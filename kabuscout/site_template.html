@@ -254,6 +254,7 @@ function renderToday() {
         <div><div class="k">損切目安</div><div class="v down">${yen(p.sl)} <span class="small">${pct(p.sl / p.close - 1)}</span></div></div>
       </div>
       <div class="reasons">${esc(p.reasons)}</div>
+      ${p.flows ? `<div class="reasons">📊 需給: ${esc(p.flows)}</div>` : ""}
     </article>`;
   }
   h += `</div>`;
@@ -469,6 +470,13 @@ function renderAI() {
         `</tbody></table></div>`;
     }
   }
+  const DS = DATA.data_sources;
+  if (DS) h += `<h2>使っているデータ</h2><div class="card tbl"><table><tbody>
+    <tr><td><b>株価</b></td><td class="small" style="white-space:normal">Yahoo Finance・2002年〜・全上場銘柄の日足</td></tr>
+    <tr><td><b>決算</b></td><td class="small" style="white-space:normal">${DS.earnings ? `Yahoo Finance・${DS.earnings.codes.toLocaleString()}銘柄・${DS.earnings.events.toLocaleString()}回分（${esc(DS.earnings.since.slice(0, 4))}年〜）。アナリスト予想がある銘柄のみ。発表日の翌営業日から使用` : "取得中"}</td></tr>
+    <tr><td><b>信用残</b></td><td class="small" style="white-space:normal">JPX 日々の銘柄別信用取引残高・<b>${DS.flows.margin_days}日分を蓄積</b>。JPXには直近数日分しか無いため毎日集めて貯めています。約250日分たまったらAIの検証に加えます（それまでは候補の参考表示のみ）</td></tr>
+    <tr><td><b>空売り残高</b></td><td class="small" style="white-space:normal">JPX 空売り残高報告（0.5%以上の大口）・<b>${DS.flows.short_files}日分を蓄積</b>。同上</td></tr>
+  </tbody></table></div>`;
   h += `<h2>考慮している世の中の出来事</h2><div class="card pad"><ul class="timeline">` +
     DATA.events.slice().sort((a, b) => a.start < b.start ? 1 : -1).map(e => `<li><span class="small ${e.kind === "crisis" ? "up" : "muted"}">${e.start.slice(0, 7).replace("-", "/")}<br>${e.kind === "crisis" ? "危機（特例）" : "制度・前提の変化"}</span>
       <span><b>${esc(e.name)}</b><div class="muted small">${esc(e.note)}</div></span></li>`).join("") +

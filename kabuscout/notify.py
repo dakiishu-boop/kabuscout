@@ -37,12 +37,13 @@ def ntfy(server: str, topic: str, title: str, text: str) -> None:
     r.raise_for_status()
 
 
-def macos(title: str, text: str) -> None:
+def macos(title: str, text: str) -> bool:
     if platform.system() != "Darwin" or os.environ.get("CI"):
-        return
+        return False
     esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
     subprocess.run(["osascript", "-e", f'display notification "{esc(text)}" with title "{esc(title)}" sound name "Glass"'],
                    check=False, timeout=10)
+    return True
 
 
 def send(cfg: dict, title: str, full: str, short: str) -> list[str]:
@@ -63,8 +64,8 @@ def send(cfg: dict, title: str, full: str, short: str) -> list[str]:
             log.warning("ntfy通知失敗: %s", e)
     if n.get("macos"):
         try:
-            macos(title, short)
-            sent.append("macos")
+            if macos(title, short):
+                sent.append("macos")
         except Exception as e:
             log.warning("macOS通知失敗: %s", e)
     return sent

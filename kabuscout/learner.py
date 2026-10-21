@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import joblib
 import numpy as np
@@ -223,7 +224,7 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     # モデルの実力（未知期間で全シグナル平均をどれだけ上回ったか）に応じてルールとの配合を決める
     lift = best_met["daily_top_ret"] - best_met["base_ret"]
     alpha = 0.2 if lift <= 0 else 0.5 if lift < 0.005 else 0.8
-    version = datetime.now().strftime("%Y%m%d-%H%M")
+    version = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d-%H%M")
     best_met.update(alpha=alpha, verdict=verdict, importance=[(k, float(v)) for k, v in imp],
                     train_n=int(len(d)), holdout_from=str(split)[:10])
     path = cfg["data"]["model_dir"] / f"model_{version}.joblib"

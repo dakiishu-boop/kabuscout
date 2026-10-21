@@ -196,10 +196,12 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     if pl is None:
         raise SystemExit("シグナル表がありません。先に daily を実行してください")
     summary = rs.run(con, cfg, trials=trials, budget_min=budget_min) if research else None
-    if summary and summary.get("plan_changed"):
-        # 売買ルールが変わったら、新しいルールで25年分のラベルを付け直す
+    if summary:
+        # 研究で採用された条件・売買ルールをこの後の再学習と過去ペーパートレードに反映するため、設定を読み直す
         from .config import load_config
         cfg = load_config()
+    if summary and summary.get("plan_changed"):
+        # 共通の売買ルールが変わったら、新しいルールで25年分のラベルを付け直す
         log.info("売買ルールを更新: %s → シグナル表を作り直します", summary["plan"]["candidate"])
         pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
     ds = dataset(cfg, pl)
@@ -207,6 +209,19 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         log.info("再学習中…" + ("（戦略の条件が更新されたため）" if summary and summary["changed"] else ""))
         learner.train(con, cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
     bt = backtest.run(cfg, ds)
+    if research:  # 地合いによる買い控え（過去ペーパートレードの予測をそのまま使って比較）
+        g = rs.gate_search(con, cfg, bt["_preds"], bt["_cal"])
+        rj = cfg["data"]["db_path"].parent / "research.json"
+        if rj.exists():
+            j = json.loads(rj.read_text())
+            j["gate"] = g
+            rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
+        if summary is not None:
+            summary["gate"] = g
+        if g["adopted"]:
+            from .config import load_config
+            cfg = load_config()
+            bt = backtest.run(cfg, ds, preds=bt["_preds"])
     site.build(con, cfg)
     if notify_on:
         notify.send_research(cfg, summary, bt)

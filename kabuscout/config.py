@@ -52,4 +52,7 @@ def load_config(path: Path | None = None) -> dict:
             cfg["labeling"]["learned"] = True
         # 戦略ごとに採用された売買ルール（無い戦略は共通ルール）
         cfg["labeling"]["per_strategy"] = saved.get("plans", {})
+        # 研究ループが採用した「地合いによる買い控え」
+        if saved.get("gate"):
+            cfg["paper_trading"]["gate"] = saved["gate"]
     return cfg

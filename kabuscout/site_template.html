@@ -445,6 +445,10 @@ function renderAI() {
         <td class="num ${cls(r.inc_score)}">${pct(r.inc_score, 2)}<div class="muted small">${r.profitable ? "実用水準" : "コスト負け"}</div></td>
         <td class="small" style="white-space:normal;min-width:14em">${r.adopted ? "✅ " : ""}${esc(r.reason)}</td></tr>`).join("") +
       `</tbody></table></div><p class="small muted">「現行の実力」は平常時の年ごとの1取引あたり損益（コスト控除後）の中央値。</p>`;
+    const G = R.gate;
+    if (G) h += `<h2>地合いによる買い控えの研究</h2><p class="small muted" style="margin-top:0">相場全体が弱いときに新規の買いを控えるルールを、過去ペーパートレード全体の年ごとの成績で比較（現行: ${esc(G.incumbent)}）。${G.adopted ? "✅ " : ""}${esc(G.reason)}</p>
+      <div class="card tbl"><table><thead><tr><th>ルール</th><th class="num">年率</th><th class="num">最大下落</th><th class="num hide-sm">プラスの年</th><th class="num">金庫期間</th></tr></thead><tbody>` +
+      G.table.map(r => `<tr><td class="small" style="white-space:normal">${esc(r.name)}</td><td class="num ${cls(r.cagr)}">${pct(r.cagr)}</td><td class="num">${pct0(r.max_dd)}</td><td class="num hide-sm">${pct0(r.pos_years)}</td><td class="num ${cls(r.vault)}">${pct(r.vault)}</td></tr>`).join("") + `</tbody></table></div>`;
     const P = R.plan;
     if (P) {
       const pl = p => `利確 +${p.tp_atr}ATR ／ 損切 −${p.sl_atr}ATR ／ 最長${p.horizon_days}日`;

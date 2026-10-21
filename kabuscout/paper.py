@@ -94,6 +94,11 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         n_new = min(free, pc["picks_per_day"])
         if crisis:  # 特例（危機）局面では新規の買いを1銘柄に絞る
             n_new = min(n_new, 1)
+        from .backtest import gate_active
+        gate = pc.get("gate")
+        if gate and gate_active(gate, float(ind["mkt_dev75"].iloc[-1].iloc[0]), float(ind["mkt_ret20"].iloc[-1].iloc[0]), crisis):
+            n_new = min(n_new, gate["max_new"])
+            events.append(f"地合いが弱いため新規の買いを控えています（{gate['name']}）")
         for _, r in cand.head(n_new).iterrows():
             con.execute("INSERT INTO paper_positions(code,name,signal_date,status,atr,prob,tp_atr,sl_atr,horizon) VALUES (?,?,?,?,?,?,?,?,?)",
                         (r["code"], r["name"], data_date.strftime("%Y-%m-%d"), "pending", float(r["atr"]),

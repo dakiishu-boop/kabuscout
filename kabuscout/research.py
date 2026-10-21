@@ -363,3 +363,71 @@ def _search_one(con, rc, key, name, mask, inc, plans, paths, ctx, state) -> dict
 def _flag_inputs(pl: pd.DataFrame) -> list[str]:
     """戦略判定に必要な列（シグナル表のうち日付・銘柄・ATR・危機フラグ以外の特徴量）。"""
     return [c for c in pl.columns if c not in ("date", "code", "atr", "crisis")]
+
+
+# ---------------------------------------------------------------- 地合いによる買い控えの研究
+def gate_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
+    """相場全体が弱いときに新規の買いを控えるルールを、過去ペーパートレード（ウォークフォワード）の
+    年ごとの成績で比較する。資金をどれだけ使うかの話なので、1取引あたりではなくポートフォリオ全体の年間リターンで見る。"""
+    from . import backtest
+    rc = cfg["research"]
+    inc = cfg["paper_trading"].get("gate")
+    variants = [None] + rc["gate_candidates"]
+    vault_start = cal[-rc["vault_days"]]
+
+    def yearly(eq):
+        out = {}
+        for y, g in eq.groupby(eq.index.year):
+            prev = eq[eq.index.year < y]
+            out[y] = g.iloc[-1] / (prev.iloc[-1] if len(prev) else eq.iloc[0]) - 1
+        return pd.Series(out)
+
+    rows = []
+    for v in variants:
+        sim = backtest.simulate(preds, cal, cfg, "ai", gate=v)
+        eq = sim["equity"]
+        search = eq[eq.index < vault_start]
+        vault = eq[eq.index >= vault_start]
+        rows.append(dict(gate=v, name=(v or {}).get("name", "買い控えなし"), yearly=yearly(search),
+                         stats=backtest._stats(search), vault=float(vault.iloc[-1] / vault.iloc[0] - 1)))
+    inc_row = next(r for r in rows if r["gate"] == inc)
+    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy='_gate'").fetchone()[0]
+    cum = int(prev + len(variants))
+    t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
+    best, t_best = None, 0.0
+    for r in rows:
+        if r is inc_row:
+            continue
+        d = (r["yearly"] - inc_row["yearly"]).dropna()
+        t = float(d.mean() / (d.std(ddof=1) / np.sqrt(len(d)))) if len(d) >= 3 and d.std(ddof=1) > 0 else 0.0
+        r["t"] = t
+        if best is None or t > t_best:
+            best, t_best = r, t
+    res = dict(incumbent=(inc or {}).get("name", "買い控えなし"), trials=len(variants), cum_trials=cum, t_needed=t_needed,
+               adopted=False, reason="",
+               table=[dict(name=r["name"], cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"],
+                           pos_years=float((r["yearly"] > 0).mean()), t=r.get("t")) for r in rows])
+    if best is None:
+        res["reason"] = "候補なし"
+    elif t_best < t_needed:
+        res["reason"] = f"最有力「{best['name']}」も改善が偶然の範囲（t={t_best:.2f} < 必要{t_needed:.2f}）"
+    elif best["vault"] < inc_row["vault"]:
+        res["reason"] = f"最有力「{best['name']}」は金庫期間で現行に負け（{best['vault']:+.1%} vs {inc_row['vault']:+.1%}）"
+    else:
+        res.update(adopted=True, candidate=best["gate"],
+                   reason=f"採用「{best['name']}」: 年率 {inc_row['stats']['cagr']:+.1%}→{best['stats']['cagr']:+.1%}、"
+                          f"最大下落 {inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}、金庫でも {inc_row['vault']:+.1%}→{best['vault']:+.1%}")
+    log.info("  地合いによる買い控え: %d通り（累計%d）→ %s", len(variants), cum, res["reason"])
+    con.execute("INSERT INTO research_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        datetime.now().isoformat(timespec="seconds"), "_gate", len(variants), cum, json.dumps(inc),
+        json.dumps(res.get("candidate")), inc_row["stats"]["cagr"], best["stats"]["cagr"] if best else None, t_best,
+        t_needed, inc_row["vault"], best["vault"] if best else None, 0, 0, int(res["adopted"]), res["reason"]))
+    con.commit()
+    if res["adopted"]:
+        from .pipeline import params_path
+        p = params_path(cfg)
+        saved = json.loads(p.read_text()) if p.exists() else {}
+        saved["gate"] = res["candidate"]
+        saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={"買い控え": res["candidate"]}))
+        p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
+    return res

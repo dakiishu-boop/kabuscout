@@ -76,11 +76,23 @@ def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return preds[preds["complete"]].drop(columns="_plan")
 
 
-def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0) -> dict:
+def gate_active(gate: dict | None, mkt_dev75: float, mkt_ret20: float, crisis: bool) -> bool:
+    """地合いによる買い控えの条件に当てはまるか。"""
+    if not gate:
+        return False
+    return ((gate.get("dev75") is not None and mkt_dev75 < gate["dev75"])
+            or (gate.get("ret20") is not None and mkt_ret20 < gate["ret20"])
+            or (gate.get("crisis") and crisis))
+
+
+def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0,
+             gate: dict | None = "config") -> dict:
     """シグナル日の翌営業日寄付で買い、ラベル付けと同じ規則（利確/損切/期限）で決済する。"""
     pc, rc = cfg["paper_trading"], cfg["research"]
     cap, maxp, per_day, cost = pc["capital_jpy"], pc["max_positions"], pc["picks_per_day"], rc["cost"]
     rng = np.random.default_rng(seed)
+    if gate == "config":
+        gate = pc.get("gate")
     cal = cal[cal >= preds["date"].min()]
     pos_of = {d: i for i, d in enumerate(cal)}
     by_date = {d: g for d, g in preds.groupby("date")}
@@ -103,6 +115,8 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
             n_new = min(free, per_day)
             if g["crisis"].iloc[0] == 1:
                 n_new = min(n_new, 1)  # 本番と同じく、危機局面では新規1銘柄まで
+            if gate_active(gate, g["mkt_dev75"].iloc[0], g["mkt_ret20"].iloc[0], g["crisis"].iloc[0] == 1):
+                n_new = min(n_new, gate["max_new"])
             if n_new > 0:
                 g = g.sort_values("prob", ascending=False) if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
                 for _, r in g.head(n_new).iterrows():
@@ -124,9 +138,10 @@ def _stats(eq: pd.Series, trades: pd.DataFrame | None = None) -> dict:
     return out
 
 
-def run(cfg: dict, ds: pd.DataFrame) -> dict:
+def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
     bc = cfg["backtest"]
-    preds = apply_plans(walk_forward(cfg, ds, bc["start_year"]), cfg)
+    if preds is None:
+        preds = apply_plans(walk_forward(cfg, ds, bc["start_year"]), cfg)
     proxy = cfg["universe"]["market_proxy"]
     m = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna()
     cal = m.index[m.index >= preds["date"].min()]
@@ -162,7 +177,9 @@ def run(cfg: dict, ds: pd.DataFrame) -> dict:
         years=years, curve=dict(ai=weekly(eq), random=weekly(rnd_eq), index=weekly(index)),
         crisis_periods=[dict(name=e.name, start=e.start, end=e.end) for e in regimes.EVENTS if e.kind == "crisis"],
     )
+    res["gate"] = cfg["paper_trading"].get("gate")
     (cfg["data"]["db_path"].parent / "backtest.json").write_text(json.dumps(res, ensure_ascii=False))
+    res["_preds"], res["_cal"] = preds, cal
     log.info("過去ペーパートレード: 年率 %+.1f%%（ランダム %+.1f%% / 日経平均 %+.1f%%）最大下落 %.1f%%",
              res["stats"]["ai"]["cagr"] * 100, res["stats"]["random"]["cagr"] * 100,
              res["stats"]["index"]["cagr"] * 100, res["stats"]["ai"]["max_dd"] * 100)

@@ -7,6 +7,10 @@ on:
     - cron: "0 0 * * 6"   # 毎週土曜 9:00 JST
   workflow_dispatch:
     inputs:
+      command:
+        description: "research（研究ループ一式）または backtest（過去ペーパートレードとWebページの更新だけ）"
+        required: false
+        default: "research"
       args:
         description: "追加オプション（例: --trials 400 --budget-min 120）"
         required: false
@@ -41,7 +45,8 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           PYTHONWARNINGS: ignore
           ARGS: ${{ github.event.inputs.args }}
-        run: python -m kabuscout research $ARGS
+          COMMAND: ${{ github.event.inputs.command || 'research' }}
+        run: python -m kabuscout "$COMMAND" $ARGS
       - uses: actions/cache/save@v4
         if: always()
         with:

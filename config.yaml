@@ -99,6 +99,13 @@ research:
   # 売買ルールの比較は「1枠あたりの年率換算」。金庫を開けるたびの上乗せ・危機時の許容悪化幅も年率で
   plan_vault_margin: 0.01
   plan_crisis_tolerance: 0.05
+  # 地合いによる買い控えの候補（日経平均の75日線乖離・20日騰落・危機局面）。max_new = その日に新規で買う上限
+  gate_candidates:
+    - {name: "日経平均が75日線割れなら新規停止", dev75: 0.0, max_new: 0}
+    - {name: "日経平均が75日線割れなら新規1銘柄", dev75: 0.0, max_new: 1}
+    - {name: "日経平均が75日線を5%下回ったら新規停止", dev75: -0.05, max_new: 0}
+    - {name: "日経平均が20日で5%以上下落中は新規停止", ret20: -0.05, max_new: 0}
+    - {name: "危機局面は新規停止", crisis: true, max_new: 0}
 
 backtest:
   start_year: 2008

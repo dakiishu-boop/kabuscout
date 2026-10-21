@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 
 JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
 FIELDS = ["open", "high", "low", "close", "volume"]
+# 株価と一緒に取得・保存する項目（配当は権利落ち日に1株あたり配当額、分割調整済み）
+STORE_FIELDS = FIELDS + ["dividends"]
 
 
 # ---------------------------------------------------------------- universe
@@ -106,8 +108,23 @@ class PriceStore:
             out[f] = df
         return clean_panel(out) if clean and fields is None else out
 
+    def load_dividends(self, start: str | None = None, end: str | None = None, codes: list[str] | None = None) -> pd.DataFrame:
+        """権利落ち日ごとの1株配当（日付×銘柄）。未取得なら空。"""
+        if not self._path("dividends").exists():
+            return pd.DataFrame()
+        have = set(pq.read_schema(self._path("dividends")).names)
+        df = pd.read_parquet(self._path("dividends"), columns=None if codes is None else [c for c in codes if c in have])
+        df.index = pd.to_datetime(df.index)
+        if start:
+            df = df[df.index >= pd.Timestamp(start)]
+        if end:
+            df = df[df.index <= pd.Timestamp(end)]
+        return df
+
     def save(self, panel: dict) -> None:
-        for f in FIELDS:
+        for f in STORE_FIELDS:
+            if f not in panel or panel[f] is None or (f == "dividends" and panel[f].empty):
+                continue
             df = panel[f].sort_index()
             df.index.name = "date"
             df.columns = [str(c) for c in df.columns]
@@ -118,10 +135,12 @@ class PriceStore:
         if not new or new["close"].empty:
             return
         old = self.load(clean=False)
+        old["dividends"] = self.load_dividends()
         merged = {}
-        for f in FIELDS:
+        for f in STORE_FIELDS:
+            n = new.get(f, pd.DataFrame())
             o = old[f].drop(columns=[c for c in replace if c in old[f].columns]) if not old[f].empty else old[f]
-            merged[f] = new[f].combine_first(o) if not o.empty else new[f]
+            merged[f] = n.combine_first(o) if not o.empty and not n.empty else (n if not n.empty else o)
         self.save(merged)
 
     def last_dates(self) -> pd.Series:
@@ -143,13 +162,13 @@ def ticker(code: str) -> str:
 
 
 def _wide(raw: pd.DataFrame, codes: list[str]) -> dict:
-    out = {f: [] for f in FIELDS}
+    out = {f: [] for f in STORE_FIELDS}
     if raw is None or raw.empty:
         return out
     if not isinstance(raw.columns, pd.MultiIndex):
         raw.columns = pd.MultiIndex.from_product([[ticker(codes[0])], raw.columns])
     raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
-    for f in FIELDS:
+    for f in STORE_FIELDS:
         try:
             w = raw.xs(f.capitalize(), axis=1, level=1)
         except KeyError:
@@ -160,13 +179,13 @@ def _wide(raw: pd.DataFrame, codes: list[str]) -> dict:
 
 
 def _download(codes: list[str], batch: int, **kw) -> dict:
-    parts = {f: [] for f in FIELDS}
+    parts = {f: [] for f in STORE_FIELDS}
     for i in range(0, len(codes), batch):
         chunk = codes[i:i + batch]
         for attempt in range(3):
             try:
                 raw = yf.download([ticker(c) for c in chunk], group_by="ticker",
-                                  auto_adjust=False, progress=False, threads=True, **kw)
+                                  auto_adjust=False, actions=True, progress=False, threads=True, **kw)
                 for f, lst in _wide(raw, chunk).items():
                     parts[f] += lst
                 break
@@ -177,7 +196,7 @@ def _download(codes: list[str], batch: int, **kw) -> dict:
             log.info("  株価取得 %d / %d", min(i + batch, len(codes)), len(codes))
         time.sleep(0.5)
     out = {}
-    for f in FIELDS:
+    for f in STORE_FIELDS:
         if parts[f]:
             df = pd.concat(parts[f], axis=1)
             df = df.loc[:, ~df.columns.duplicated()]
@@ -206,6 +225,10 @@ def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
     # データが1本も無い銘柄（新規上場直後など）は週1回だけ取り直す
     fresh = [c for c in codes if (c not in last and not recently_tried(c))
              or (c in last and (last[c] < cutoff or meta.get(c, "9999") > hstart))]
+    if not store.load_dividends(codes=["7203"]).shape[1] and last:
+        # 配当データを持っていない旧形式の保存データ → 一度だけ全期間を取り直して配当も揃える
+        log.info("配当データを揃えるため、全銘柄の全期間を取り直します（初回のみ）")
+        fresh = [c for c in codes if c in last or not recently_tried(c)]
     incremental = [c for c in codes if c in last and c not in set(fresh)]
 
     replace: set[str] = set()

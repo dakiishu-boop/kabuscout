@@ -109,6 +109,12 @@ def forecast_up(i, p):
     return (i["ev_forecast_up_age"] >= 0) & (i["ev_forecast_up_age"] <= p["age"]) & (i["dev25"] <= p["ext"])
 
 
+def dividend_runup(i, p):
+    # 配当利回りの高い銘柄は権利付き最終日に向けて買われやすい（権利取り）。権利落ち日の数週間前に拾う
+    return ((i["div_yield"] >= p["yld"]) & (i["days_to_ex"] >= p["lo"]) & (i["days_to_ex"] <= p["hi"])
+            & (i["close"] > i["sma75"] * (1 - p["below"])))
+
+
 STRATEGIES: list[Strategy] = [
     Strategy("pullback_25", "押し目(25日線)", "上昇トレンド中、出来高を細らせながら25日線まで調整し反転の兆し", pullback_25, dict(
         run=(0.02, 0.10, 0.05, 0.02), dev_lo=(-0.06, -0.01, -0.03, -0.06), dev_hi=(0.0, 0.04, 0.015, 0.04),
@@ -135,6 +141,8 @@ STRATEGIES: list[Strategy] = [
         age=(1, 10, 5, 10), react=(0.02, 0.15, 0.05, 0.02), surp=(-50.0, 50.0, 0.0, -50.0), vol=(1.0, 3.0, 1.5, 1.0))),
     Strategy("buyback", "自社株買い発表", "自社株買いの決定を発表した直後（急騰済みの銘柄は除く）", buyback, dict(
         age=(0, 10, 3, 10), ext=(0.0, 0.20, 0.10, 0.20))),
+    Strategy("dividend_runup", "権利取り", "配当利回り3%以上の銘柄を、権利落ち日の1〜2ヶ月前に（権利付き最終日に向けた買いを狙う）", dividend_runup, dict(
+        yld=(0.025, 0.05, 0.03, 0.025), lo=(3, 30, 21, 3), hi=(10, 50, 40, 50), below=(0.0, 0.10, 0.05, 0.10))),
     Strategy("forecast_up", "業績上方修正", "業績予想の上方修正を発表した直後（急騰済みの銘柄は除く）", forecast_up, dict(
         age=(0, 10, 3, 10), ext=(0.0, 0.20, 0.10, 0.20))),
 ]
@@ -214,6 +222,9 @@ def reasons(row: pd.Series, keys: list[str]) -> str:
         a = row.get(k)
         if a == a and a is not None and a <= 20:
             parts.append(f"{label}から{int(a) + 1}営業日")
+    if "dividend_runup" in keys or row.get("div_yield", 0) >= 0.035:
+        dte = row.get("days_to_ex")
+        parts.append(f"配当利回り{row['div_yield']:.1%}" + (f"・権利落ちまで約{int(dte)}営業日" if dte == dte and dte is not None else ""))
     if row.get("dist_high52", -1) > -0.03 and "breakout_52w" not in keys:
         parts.append("52週高値圏")
     return "・".join(parts)

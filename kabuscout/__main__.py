@@ -32,6 +32,7 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
+    ap.add_argument("--no-collect", action="store_true", help="追加データ（決算・需給・適時開示）の収集をしない")
     ap.add_argument("--trials", type=int)
     ap.add_argument("--budget-min", type=float)
     a = ap.parse_args(argv)
@@ -40,7 +41,7 @@ def main(argv=None):
 
     if a.command == "daily":
         from .pipeline import run_daily
-        run_daily(cfg, force=a.force, retrain=a.retrain, notify_on=not a.no_notify)
+        run_daily(cfg, force=a.force, retrain=a.retrain, notify_on=not a.no_notify, collect=not a.no_collect)
 
     elif a.command == "train":
         from . import pool

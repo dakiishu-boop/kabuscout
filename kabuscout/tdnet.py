@@ -71,7 +71,7 @@ def update(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = Non
             r = requests.get(API.format(d=key), headers=UA, timeout=30)
             r.raise_for_status()
             for it in r.json().get("items", []):
-                t = it["Tdnet"]
+                t = it.get("Tdnet", it)  # 件数が多い日は {"Tdnet": {...}} で包まれずに返ってくる
                 ev = classify(t["title"])
                 if ev:
                     rows.append(dict(pubdate=pd.Timestamp(t["pubdate"]), code=str(t["company_code"])[:4],
@@ -83,10 +83,16 @@ def update(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = Non
             time.sleep(10)
         if i % 250 == 0:
             log.info("  適時開示 %d / %d 日", i, len(days))
+            if rows:  # 途中経過も保存（中断しても取得済みの分は残す）
+                old = _save(p, meta_p, old, rows, done)
+                rows = []
         time.sleep(1.0)
+    return _save(p, meta_p, old, rows, done)
+
+
+def _save(p, meta_p, old, rows, done):
     if rows:
-        new = pd.DataFrame(rows)
-        old = pd.concat([old, new], ignore_index=True).drop_duplicates(["pubdate", "code", "title"])
+        old = pd.concat([old, pd.DataFrame(rows)], ignore_index=True).drop_duplicates(["pubdate", "code", "title"])
         old.to_parquet(p)
     meta_p.write_text(json.dumps(sorted(done)))
     return old

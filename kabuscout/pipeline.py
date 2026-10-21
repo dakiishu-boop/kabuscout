@@ -99,7 +99,8 @@ def store_of(cfg: dict) -> data.PriceStore:
     return data.PriceStore(cfg["data"]["price_dir"])
 
 
-def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: bool = True) -> dict | None:
+def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: bool = True,
+              collect: bool = True) -> dict | None:
     con = connect(cfg["data"]["db_path"])
     wait_for_close_data(cfg)
     uni = data.refresh_universe(con, cfg)
@@ -172,7 +173,8 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     con.commit()
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
     print("\n" + md)
-    collect_extra(cfg, uni)
+    if collect:
+        collect_extra(cfg, uni)
     return dict(date=data_date, top=top, n_signals=len(today))
 
 
@@ -182,6 +184,7 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     con = connect(cfg["data"]["db_path"])
     if research:  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
         uni = data.refresh_universe(con, cfg)
+        data.update_prices(store_of(cfg), uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
         for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=60)),
                          ("適時開示", lambda: tdnet.update(cfg, max_minutes=120))):
             try:

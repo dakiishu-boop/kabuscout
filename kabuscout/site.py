@@ -47,9 +47,11 @@ def _prices(cfg: dict, codes: list[str], n: int = 130) -> dict:
 
 
 def _sources(cfg: dict) -> dict:
-    from . import earnings, flows
-    ev = earnings.load(cfg)
+    from . import earnings, flows, tdnet
+    ev, td = earnings.load(cfg), tdnet.load(cfg)
     return dict(flows=flows.history_days(cfg),
+                tdnet=None if td is None else dict(rows=int(len(td)), since=str(td["pubdate"].min())[:10],
+                                                   counts=td["events"].str.split(",").explode().value_counts().to_dict()),
                 earnings=None if ev is None else dict(codes=int(ev["code"].nunique()), events=int(len(ev)),
                                                       since=str(ev["date"].min())[:10]))
 

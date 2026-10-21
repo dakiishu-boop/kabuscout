@@ -28,7 +28,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -60,6 +60,10 @@ def main(argv=None):
         from .pipeline import run_research
         run_research(cfg, research=a.command == "research", trials=a.trials, budget_min=a.budget_min,
                      notify_on=not a.no_notify)
+
+    elif a.command == "edinet":
+        from . import edinet
+        print(edinet.update(cfg, max_minutes=a.budget_min or 30))
 
     elif a.command == "site":
         from . import site

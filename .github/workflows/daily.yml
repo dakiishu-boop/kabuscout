@@ -43,6 +43,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
           PYTHONWARNINGS: ignore
           ARGS: ${{ github.event.inputs.args }}
         run: |

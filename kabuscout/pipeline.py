@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from . import data, earnings, flows, learner, notify, paper, pool, regimes, report, site, tdnet
+from . import data, earnings, edinet, flows, learner, notify, paper, pool, regimes, report, site, tdnet
 from .db import connect
 from .strategies import apply_flags, load_params, plan_for, reasons
 
@@ -188,7 +188,8 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         uni = data.refresh_universe(con, cfg)
         data.update_prices(store_of(cfg), uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
         for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=60)),
-                         ("適時開示", lambda: tdnet.update(cfg, max_minutes=120))):
+                         ("適時開示", lambda: tdnet.update(cfg, max_minutes=120)),
+                         ("財務データ", lambda: edinet.update(cfg, max_minutes=90))):
             try:
                 fn()
             except Exception as e:
@@ -235,7 +236,8 @@ def collect_extra(cfg: dict, uni: pd.DataFrame) -> None:
     lim = cfg.get("earnings", {}).get("max_minutes", 30)
     for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=lim)),
                      ("需給データ", lambda: flows.collect(cfg)),
-                     ("適時開示", lambda: tdnet.update(cfg, max_minutes=lim))):
+                     ("適時開示", lambda: tdnet.update(cfg, max_minutes=lim)),
+                     ("財務データ", lambda: edinet.update(cfg, max_minutes=20))):
         try:
             fn()
         except Exception as e:

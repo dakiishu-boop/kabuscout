@@ -7,6 +7,7 @@
   train        再学習だけ実行
   notify-test  通知チャネルのテスト送信
   status       データ・モデル・成績の状況
+  site         Webページだけ作り直す（site/index.html）
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -45,8 +46,12 @@ def main(argv=None):
         learner.train(con, cfg, ds, ind["close"].index[-1].strftime("%Y-%m-%d"))
 
     elif a.command == "notify-test":
-        sent = notify.send(cfg, "KabuScout テスト通知", "通知の設定は正常です ✅", "通知の設定は正常です")
+        sent = notify.send_text(cfg, "KabuScout テスト通知", "通知の設定は正常です ✅")
         print("送信:", sent or "なし（config.yaml / .env を確認）")
+
+    elif a.command == "site":
+        from . import site
+        print(site.build(connect(cfg["data"]["db_path"]), cfg))
 
     elif a.command == "status":
         con = connect(cfg["data"]["db_path"])

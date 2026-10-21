@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS paper_positions(
   entry_date TEXT, entry REAL, shares INTEGER, tp REAL, sl REAL, atr REAL,
   exit_date TEXT, exit REAL, pnl REAL, reason TEXT, prob REAL, days_held INTEGER DEFAULT 0
 );
+-- その日の通知内容（Webページの「過去の結果」表示用）
+CREATE TABLE IF NOT EXISTS summaries(data_date TEXT PRIMARY KEY, json TEXT);
 CREATE TABLE IF NOT EXISTS runs(
   data_date TEXT PRIMARY KEY, started TEXT, finished TEXT, status TEXT, message TEXT
 );

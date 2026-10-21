@@ -53,3 +53,11 @@ notify:
   ntfy_topic: ${NTFY_TOPIC}
   ntfy_server: https://ntfy.sh
   macos: true
+
+schedule:
+  # 引け直後に起動された場合、当日の株価が確定するまで待つ
+  wait_for_data: true
+  max_wait_min: 45
+
+site:
+  url: https://dakiishu-boop.github.io/kabuscout/

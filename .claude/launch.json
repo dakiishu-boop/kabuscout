@@ -4,8 +4,27 @@
     {
       "name": "dashboard",
       "runtimeExecutable": ".venv/bin/streamlit",
-      "runtimeArgs": ["run", "dashboard.py", "--server.headless", "true", "--server.port", "8501"],
+      "runtimeArgs": [
+        "run",
+        "dashboard.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8501"
+      ],
       "port": 8501
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8600",
+        "--directory",
+        "site"
+      ],
+      "port": 8600
     }
   ]
 }

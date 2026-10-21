@@ -48,8 +48,8 @@ python3 -m venv .venv
 
 ### 通知
 `.env.example` を `.env` にコピーして設定（どちらか片方でOK）:
-- **ntfy**（おすすめ・無料・登録不要）: スマホに ntfy アプリを入れ、推測されにくいトピック名（例 `kabuscout-8f3k2x`）を購読 → `NTFY_TOPIC` に同じ名前
-- **Discord**: サーバーの「連携サービス → ウェブフック」で URL を作成 → `DISCORD_WEBHOOK_URL`
+- **Discord**（おすすめ・カード形式で見やすい）: サーバーの「チャンネルの編集 → 連携サービス → ウェブフック」で URL を作成 → `DISCORD_WEBHOOK_URL`
+- **ntfy**（無料・登録不要）: スマホに ntfy アプリを入れ、推測されにくいトピック名を購読 → `NTFY_TOPIC` に同じ名前
 
 `.venv/bin/python -m kabuscout notify-test` で確認。Mac の通知センターにも出ます。
 
@@ -63,12 +63,13 @@ bash scripts/install_launchd.sh
 電源オフ中は動きません。※ 書類・デスクトップ フォルダ内に置くと macOS の権限で失敗することがあるので、`~/kabuscout` などに置いてください。
 
 ### B. GitHub Actions で動かす（PCを閉じていてもOK・無料）
-1. このフォルダを GitHub の **private** リポジトリに push
+1. このフォルダを GitHub の **public** リポジトリに push（無料プランで GitHub Pages を使うため）
 2. Settings → Secrets and variables → Actions に `NTFY_TOPIC` か `DISCORD_WEBHOOK_URL` を登録
-3. Actions タブで `daily-screening` を手動実行（初回は全履歴取得で20分程度）
+3. Settings → Pages の Source を「GitHub Actions」にする
+4. Actions タブで `daily-screening` を手動実行（初回は全履歴取得で20分程度）
 
-以後、平日16:45頃に自動実行され、スマホに通知が来ます。学習状態はキャッシュで引き継がれます。
-手元のダッシュボードで見たいときは `bash scripts/pull_cloud_data.sh`。A と B を両方動かすと通知が二重になるのでどちらかに。
+以後、平日15:45に起動し、Yahooのデータが確定する15:55頃まで待ってから実行、通知とWebページ更新が行われます（GitHubの混雑で遅れることがあります）。学習状態はキャッシュで引き継がれます。
+結果は Web ページ（https://dakiishu-boop.github.io/kabuscout/）でも見られます。A と B を両方動かすと通知が二重になるのでどちらかに。
 
 ## データソースと拡張候補
 

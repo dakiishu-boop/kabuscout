@@ -78,7 +78,9 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
     # 3) 新規の注文（翌営業日寄付きで約定予定）
     held = pd.read_sql("SELECT code FROM paper_positions WHERE status IN ('open','pending')", con)["code"].tolist()
     free = pc["max_positions"] - len(held)
-    if free > 0 and len(picks):
+    already = con.execute("SELECT COUNT(*) FROM paper_positions WHERE signal_date=?",
+                          (data_date.strftime("%Y-%m-%d"),)).fetchone()[0]
+    if free > 0 and len(picks) and not already:  # 同じ日の再実行で二重注文しない
         cand = picks[~picks["code"].isin(held)]
         if pc.get("min_prob") and cand["prob"].notna().any():
             cand = cand[cand["prob"] >= pc["min_prob"]]

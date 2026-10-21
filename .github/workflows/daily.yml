@@ -1,10 +1,11 @@
-# パソコンが閉じていても毎営業日の引け後にクラウド(GitHub Actions)でスクリーニング → スマホに通知
-# 必要な Secrets: DISCORD_WEBHOOK_URL と NTFY_TOPIC のどちらか（両方でも可）
+# パソコンが閉じていても毎営業日の引け後にクラウド(GitHub Actions)でスクリーニング
+# → Discord / ntfy に通知し、結果を GitHub Pages のWebページに公開する
+# Secrets: DISCORD_WEBHOOK_URL / NTFY_TOPIC（どちらか片方でも可）
 name: daily-screening
 
 on:
   schedule:
-    - cron: "45 7 * * 1-5"   # 16:45 JST（GitHub の混雑で数十分遅れることがあります）
+    - cron: "45 6 * * 1-5"   # 15:45 JST。Yahooのデータは約20分遅れなので、確定(15:55頃)まで自動で待ってから実行
   workflow_dispatch:
     inputs:
       args:
@@ -14,10 +15,15 @@ on:
 
 concurrency: daily-screening
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   screen:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,7 +45,9 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           PYTHONWARNINGS: ignore
           ARGS: ${{ github.event.inputs.args }}
-        run: python -m kabuscout daily $ARGS
+        run: |
+          python -m kabuscout daily $ARGS
+          python -m kabuscout site   # 休場日などでスキップした日もページは最新化
 
       - uses: actions/cache/save@v4
         if: always()
@@ -47,13 +55,16 @@ jobs:
           path: data
           key: kabuscout-data-${{ github.run_id }}
 
-      # 手元のダッシュボードで見たいとき用（scripts/pull_cloud_data.sh で取得）
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: kabuscout-data
-          path: |
-            data/kabuscout.db
-            data/models/
-            reports/
-          retention-days: 7
+          path: site
+
+  deploy:
+    needs: screen
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

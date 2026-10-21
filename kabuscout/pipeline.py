@@ -9,10 +9,15 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from . import data, learner, notify, paper
+import json
+import time
+
+import jpholiday
+
+from . import data, learner, notify, paper, report, site
 from .db import connect
 from .indicators import compute
-from .strategies import STRATEGY_NAMES, detect_all, reasons
+from .strategies import detect_all, reasons
 
 log = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
@@ -34,6 +39,38 @@ def _cutoff() -> pd.Timestamp:
     now = datetime.now(JST)
     today = pd.Timestamp(now.date())
     return today if now.time() >= dtime(15, 40) else today - pd.Timedelta(days=1)
+
+
+def is_trading_day(d) -> bool:
+    d = pd.Timestamp(d)
+    return d.weekday() < 5 and not jpholiday.is_holiday(d.date()) and not (
+        (d.month == 12 and d.day == 31) or (d.month == 1 and d.day <= 3))
+
+
+def wait_for_close_data(cfg: dict) -> None:
+    """引け直後の実行用。Yahoo の東証データは約20分遅れなので、15:55 まで待ち、
+    さらに当日の足が取れるまで最大 cfg['schedule']['max_wait_min'] 分ほど待つ。"""
+    sc = cfg.get("schedule", {})
+    now = datetime.now(JST)
+    if not sc.get("wait_for_data", True) or not is_trading_day(now) or not (dtime(15, 0) <= now.time() < dtime(18, 0)):
+        return
+    ready = now.replace(hour=15, minute=55, second=0, microsecond=0)
+    if now < ready:
+        log.info("引け後データの確定待ち: %s まで %d 秒", ready.strftime("%H:%M"), (ready - now).seconds)
+        time.sleep((ready - now).seconds)
+    deadline = time.time() + 60 * sc.get("max_wait_min", 45)
+    proxy = cfg["universe"]["market_proxy"] + ".T"
+    today = datetime.now(JST).strftime("%Y-%m-%d")
+    while time.time() < deadline:
+        try:
+            df = yf.download(proxy, period="5d", progress=False, auto_adjust=False)
+            if len(df) and df.index[-1].strftime("%Y-%m-%d") == today:
+                return
+        except Exception as e:
+            log.warning("確認失敗: %s", e)
+        log.info("当日の株価がまだ出ていないので5分待ちます")
+        time.sleep(300)
+    log.warning("当日の株価が確認できないまま実行します")
 
 
 def build(con, cfg: dict, uni: pd.DataFrame):
@@ -59,15 +96,9 @@ def build(con, cfg: dict, uni: pd.DataFrame):
     return ind, sigs, ds, int(mask.iloc[-1].sum())
 
 
-def _market_line(ind: dict) -> str:
-    r = {k: float(ind[k].iloc[-1].iloc[0]) for k in ("mkt_dev75", "mkt_ret20", "breadth25")}
-    mood = "強気" if r["mkt_dev75"] > 0 and r["breadth25"] > 0.5 else "弱気" if r["mkt_dev75"] < 0 else "中立"
-    return (f"地合い: {mood}（TOPIX 75日線乖離 {r['mkt_dev75']:+.1%} / 20日 {r['mkt_ret20']:+.1%} / "
-            f"25日線より上の銘柄 {r['breadth25']:.0%}）")
-
-
 def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: bool = True) -> dict | None:
     con = connect(cfg["data"]["db_path"])
+    wait_for_close_data(cfg)
     uni = data.refresh_universe(con, cfg)
     names = dict(zip(uni["code"], uni["name"]))
     data.update_prices(con, uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
@@ -111,14 +142,18 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     _label_live(con, ds)
 
     pt = paper.step(con, cfg, ind, top, last) if cfg["paper_trading"]["enabled"] else None
-    title, full, short = _message(cfg, ind, top, len(today), n_scanned, bundle, weights, pt, con, data_date)
-    (cfg["data"]["report_dir"] / f"{data_date}.md").write_text(f"# {title}\n\n{full}\n")
-    sent = notify.send(cfg, title, full, short) if notify_on else []
+    rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date)
+    con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?)", (data_date, json.dumps(rep, ensure_ascii=False, default=float)))
+    con.commit()
+    md = report.to_markdown(rep)
+    (cfg["data"]["report_dir"] / f"{data_date}.md").write_text(md + "\n")
+    site.build(con, cfg)
+    sent = notify.send(cfg, rep) if notify_on else []
     con.execute("UPDATE runs SET finished=?, status='ok', message=? WHERE data_date=?",
                 (datetime.now().isoformat(timespec="seconds"), f"{len(today)} signals; sent={sent}", data_date))
     con.commit()
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
-    print(f"\n{title}\n{full}")
+    print("\n" + md)
     return dict(date=data_date, top=top, n_signals=len(today))
 
 
@@ -145,37 +180,3 @@ def _label_live(con, ds: pd.DataFrame) -> None:
     con.executemany("UPDATE signals SET label=?, ret=?, exit_days=?, labeled=1 WHERE date=? AND code=?",
                     [(int(r.label), float(r.ret), int(r.exit_days), r.date, r.code) for r in m.itertuples()])
     con.commit()
-
-
-def _message(cfg, ind, top, n_sig, n_scanned, bundle, weights, pt, con, data_date):
-    title = f"KabuScout {data_date} 引け後スクリーニング"
-    L = [_market_line(ind), f"対象 {n_scanned:,} 銘柄を走査 → シグナル {n_sig} 件、上位 {len(top)} 件:", ""]
-    for _, r in top.iterrows():
-        strat = "・".join(STRATEGY_NAMES[k] for k in r["strategies"].split(","))
-        prob = f" / AI勝率予測 {r['prob']:.0%}" if pd.notna(r["prob"]) else ""
-        warn = f" ⚠決算まで{int(r['earnings_days'])}日" if pd.notna(r["earnings_days"]) and r["earnings_days"] <= 14 else ""
-        L.append(f"**{r['rank']}. {r['code']} {r['name']}**【{strat}】{prob}{warn}")
-        L.append(f"   終値 {r['close']:,.0f} / 利確目安 {r['tp']:,.0f} / 損切目安 {r['sl']:,.0f}")
-        L.append(f"   {r['reasons']}")
-    L.append("")
-    if bundle is not None:
-        m = bundle["metrics"]
-        lift = m["daily_top_ret"] - m["base_ret"]
-        edge = "優位性あり" if lift >= 0.005 else "わずかに優位" if lift > 0 else "まだ優位性なし（ルール中心で順位付け）"
-        L.append(f"🧠 AIモデル v{bundle['version']}（{edge}）: 学習に使っていない期間で、上位推奨の期待値 "
-                 f"{m['daily_top_ret']:+.2%} / 勝率 {m['daily_top_win']:.0%}（全シグナル平均 {m['base_ret']:+.2%} / {m['base_win']:.0%}）")
-    live = pd.read_sql("SELECT label, ret FROM signals WHERE labeled=1 AND rank<=5", con)
-    if len(live) >= 5:
-        L.append(f"📊 実際に通知した上位5件の答え合わせ: {len(live)}件 勝率 {live['label'].mean():.0%} / 平均 {live['ret'].mean():+.2%}")
-    if weights:
-        best = sorted(weights.items(), key=lambda t: -t[1])[:3]
-        L.append("🔥 最近効いている戦略: " + " / ".join(f"{STRATEGY_NAMES.get(k, k)}(×{w:.2f})" for k, w in best))
-    if pt:
-        wr = f" 勝率{pt['win_rate']:.0%}" if pt["win_rate"] is not None else ""
-        L.append(f"💼 ペーパートレード: 保有{pt['open']} 注文{pt['pending']} 決済{pt['closed']}{wr} / "
-                 f"評価額 {pt['equity']:,.0f}円（実現 {pt['realized']:+,.0f} / 含み {pt['unrealized']:+,.0f}）")
-        for e in pt["events"]:
-            L.append(f"   ・{e}")
-    L.append("\n※売買の判断はご自身で。過去の傾向は将来を保証しません。")
-    short = f"{len(top)}件: " + ", ".join(f"{r['code']} {r['name']}" for _, r in top.head(5).iterrows())
-    return title, "\n".join(L), short

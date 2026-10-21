@@ -88,10 +88,12 @@ def gate_active(gate: dict | None, mkt_dev75: float, mkt_ret20: float, crisis: b
 
 
 def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0,
-             gate: dict | None = "config") -> dict:
+             gate: dict | None = "config", max_positions: int | None = None, picks_per_day: int | None = None) -> dict:
     """シグナル日の翌営業日寄付で買い、ラベル付けと同じ規則（利確/損切/期限）で決済する。"""
     pc, rc = cfg["paper_trading"], cfg["research"]
-    cap, maxp, per_day, cost = pc["capital_jpy"], pc["max_positions"], pc["picks_per_day"], rc["cost"]
+    cap, cost = pc["capital_jpy"], rc["cost"]
+    maxp = max_positions or pc["max_positions"]
+    per_day = picks_per_day or pc["picks_per_day"]
     rng = np.random.default_rng(seed)
     if gate == "config":
         gate = pc.get("gate")

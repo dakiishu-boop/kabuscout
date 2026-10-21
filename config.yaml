@@ -106,6 +106,10 @@ research:
     - {name: "日経平均が75日線を5%下回ったら新規停止", dev75: -0.05, max_new: 0}
     - {name: "日経平均が20日で5%以上下落中は新規停止", ret20: -0.05, max_new: 0}
     - {name: "危機局面は新規停止", crisis: true, max_new: 0}
+  # 同時保有数・1日の新規数の候補
+  portfolio_grid:
+    max_positions: [3, 5, 8, 10, 15]
+    picks_per_day: [1, 2, 3]
 
 backtest:
   start_year: 2008

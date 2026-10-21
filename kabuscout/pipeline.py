@@ -213,14 +213,15 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     bt = backtest.run(cfg, ds)
     if research:  # 地合いによる買い控え（過去ペーパートレードの予測をそのまま使って比較）
         g = rs.gate_search(con, cfg, bt["_preds"], bt["_cal"])
+        pf = rs.portfolio_search(con, cfg, bt["_preds"], bt["_cal"])
         rj = cfg["data"]["db_path"].parent / "research.json"
         if rj.exists():
             j = json.loads(rj.read_text())
-            j["gate"] = g
+            j["gate"], j["portfolio"] = g, pf
             rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
         if summary is not None:
-            summary["gate"] = g
-        if g["adopted"]:
+            summary["gate"], summary["portfolio"] = g, pf
+        if g["adopted"] or pf["adopted"]:
             from .config import load_config
             cfg = load_config()
             bt = backtest.run(cfg, ds, preds=bt["_preds"])

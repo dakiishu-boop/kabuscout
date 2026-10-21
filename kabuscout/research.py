@@ -431,3 +431,61 @@ def gate_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex) -> d
         saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={"買い控え": res["candidate"]}))
         p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
     return res
+
+
+# ---------------------------------------------------------------- 同時保有数・1日の新規数の研究
+def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
+    """同時に持つ銘柄数と1日に新しく買う数を、過去ペーパートレード全体の年ごとの成績で比較する（安全装置は同じ）。
+    分散を増やすと下落は小さくなりやすいが、AIの上位以外も買うことになるので、どちらが良いかは確かめるしかない。"""
+    from . import backtest
+    rc, pc = cfg["research"], cfg["paper_trading"]
+    inc = dict(max_positions=pc["max_positions"], picks_per_day=pc["picks_per_day"])
+    variants = [dict(max_positions=m, picks_per_day=k) for m in rc["portfolio_grid"]["max_positions"]
+                for k in rc["portfolio_grid"]["picks_per_day"] if k <= m]
+    if inc not in variants:
+        variants.append(inc)
+    vault_start = cal[-rc["vault_days"]]
+    rows = []
+    for v in variants:
+        eq = backtest.simulate(preds, cal, cfg, "ai", **v)["equity"]
+        s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
+        yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
+                        for y, g in s_.groupby(s_.index.year)})
+        rows.append(dict(v=v, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1)))
+    inc_row = next(r for r in rows if r["v"] == inc)
+    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy='_portfolio'").fetchone()[0]
+    cum = int(prev + len(variants))
+    t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
+    best, t_best = None, -9.0
+    for r in rows:
+        d = (r["yearly"] - inc_row["yearly"]).dropna()
+        r["t"] = float(d.mean() / (d.std(ddof=1) / np.sqrt(len(d)))) if r is not inc_row and len(d) >= 3 and d.std(ddof=1) > 0 else None
+        # 年率が下がらず（t>0）、最大下落が小さいものを優先: 年率の改善の t 値で選ぶ
+        if r["t"] is not None and r["t"] > t_best:
+            best, t_best = r, r["t"]
+    name = lambda v: f"同時{v['max_positions']}銘柄・1日{v['picks_per_day']}銘柄まで"
+    res = dict(incumbent=name(inc), trials=len(variants), cum_trials=cum, t_needed=t_needed, adopted=False,
+               table=[dict(name=name(r["v"]), cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"],
+                           pos_years=float((r["yearly"] > 0).mean()), t=r["t"]) for r in rows])
+    if best is None or t_best < t_needed:
+        res["reason"] = (f"最有力「{name(best['v'])}」も改善が偶然の範囲（t={t_best:.2f} < 必要{t_needed:.2f}）" if best else "候補なし")
+    elif best["vault"] < inc_row["vault"]:
+        res["reason"] = f"最有力「{name(best['v'])}」は金庫期間で現行に負け（{best['vault']:+.1%} vs {inc_row['vault']:+.1%}）"
+    else:
+        res.update(adopted=True, candidate=best["v"],
+                   reason=f"採用「{name(best['v'])}」: 年率 {inc_row['stats']['cagr']:+.1%}→{best['stats']['cagr']:+.1%}、最大下落 "
+                          f"{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}、金庫でも {inc_row['vault']:+.1%}→{best['vault']:+.1%}")
+    log.info("  同時保有数・1日の新規数: %d通り（累計%d）→ %s", len(variants), cum, res["reason"])
+    con.execute("INSERT INTO research_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        datetime.now().isoformat(timespec="seconds"), "_portfolio", len(variants), cum, json.dumps(inc),
+        json.dumps(res.get("candidate")), inc_row["stats"]["cagr"], best["stats"]["cagr"] if best else None,
+        t_best, t_needed, inc_row["vault"], best["vault"] if best else None, 0, 0, int(res["adopted"]), res["reason"]))
+    con.commit()
+    if res["adopted"]:
+        from .pipeline import params_path
+        p = params_path(cfg)
+        saved = json.loads(p.read_text()) if p.exists() else {}
+        saved["portfolio"] = res["candidate"]
+        saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={"ポートフォリオ": res["candidate"]}))
+        p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
+    return res

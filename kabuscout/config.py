@@ -55,4 +55,6 @@ def load_config(path: Path | None = None) -> dict:
         # 研究ループが採用した「地合いによる買い控え」
         if saved.get("gate"):
             cfg["paper_trading"]["gate"] = saved["gate"]
+        if saved.get("portfolio"):  # 研究ループが採用した同時保有数・1日の新規数
+            cfg["paper_trading"].update(saved["portfolio"])
     return cfg

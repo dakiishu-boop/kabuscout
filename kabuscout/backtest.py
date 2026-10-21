@@ -46,6 +46,36 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int) -> pd.DataFrame:
     return pd.concat(out, ignore_index=True)
 
 
+def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """戦略ごとの売買ルールが採用されていれば、そのルールで各取引の結果を計算し直す（本番と同じ条件にする）。"""
+    from .strategies import plan_for
+    lab = cfg["labeling"]
+    if not lab.get("per_strategy"):
+        return preds
+    plans = [plan_for(k.split(","), lab) for k in preds["strategies"]]
+    key = [(p["tp_atr"], p["sl_atr"], p["horizon_days"]) for p in plans]
+    preds = preds.assign(_plan=key)
+    glob = (lab["tp_atr"], lab["sl_atr"], lab["horizon_days"])
+    todo = preds[preds["_plan"] != glob]
+    if todo.empty:
+        return preds.drop(columns="_plan")
+    px = PriceStore(cfg["data"]["price_dir"]).load(codes=sorted(todo["code"].unique()))
+    c = px["close"].ffill(limit=5)
+    o, h, l = (px[k].fillna(c) for k in ("open", "high", "low"))
+    tix = {d: i for i, d in enumerate(c.index)}
+    cix = {k: i for i, k in enumerate(c.columns)}
+    arrs = [x.to_numpy("float32") for x in (o, h, l, c)]
+    preds = preds.copy()
+    for (kt, ks, hz), g in todo.groupby("_plan"):
+        p = learner.forward_paths(*arrs, g["date"].map(tix).to_numpy(int), g["code"].map(cix).to_numpy(int), int(hz))
+        r = learner.outcomes(p, g["atr"].to_numpy(float), kt, ks, int(hz))
+        preds.loc[g.index, "ret"] = r["ret"]
+        preds.loc[g.index, "exit_days"] = r["exit_days"]
+        preds.loc[g.index, "complete"] = r["complete"]
+    log.info("  戦略ごとの売買ルールで %d件の結果を計算し直しました", len(todo))
+    return preds[preds["complete"]].drop(columns="_plan")
+
+
 def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0) -> dict:
     """シグナル日の翌営業日寄付で買い、ラベル付けと同じ規則（利確/損切/期限）で決済する。"""
     pc, rc = cfg["paper_trading"], cfg["research"]
@@ -96,7 +126,7 @@ def _stats(eq: pd.Series, trades: pd.DataFrame | None = None) -> dict:
 
 def run(cfg: dict, ds: pd.DataFrame) -> dict:
     bc = cfg["backtest"]
-    preds = walk_forward(cfg, ds, bc["start_year"])
+    preds = apply_plans(walk_forward(cfg, ds, bc["start_year"]), cfg)
     proxy = cfg["universe"]["market_proxy"]
     m = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna()
     cal = m.index[m.index >= preds["date"].min()]

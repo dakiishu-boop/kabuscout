@@ -191,20 +191,26 @@ def run(con, cfg: dict, trials: int | None = None, budget_min: float | None = No
     saved = json.loads(ppath.read_text()) if ppath.exists() else {}
     plan_res = plan_search(con, cfg, pl, params, vault_start, rng, vault_uses)
     plan_changed = plan_res["adopted"]
-    if changed or plan_changed:
+    per_adopted = {r["strategy"]: r["candidate"] for r in plan_res["per_strategy"] if r["adopted"]}
+    if changed or plan_changed or per_adopted:
         hist = saved.get("history", [])
         adopted = {r["strategy"]: r["candidate"] for r in results if r["adopted"]}
         if plan_changed:
-            adopted["売買ルール"] = plan_res["candidate"]
+            adopted["売買ルール（共通）"] = plan_res["candidate"]
+        adopted.update({f"売買ルール:{k}": v for k, v in per_adopted.items()})
         hist.append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted=adopted))
         out = dict(params=params, history=hist)
         plan = plan_res["candidate"] if plan_changed else saved.get("plan")
         if plan:
             out["plan"] = plan
+        plans = {**saved.get("plans", {}), **per_adopted}
+        if plans:
+            out["plans"] = plans
         ppath.write_text(json.dumps(out, ensure_ascii=False, indent=1))
     summary = dict(run_at=datetime.now().isoformat(timespec="seconds"), search_from=str(dates[0])[:10],
                    search_to=str(search_end)[:10], vault_from=str(vault_start)[:10], cost=rc["cost"],
                    minutes=round((time.time() - t0) / 60, 1), changed=changed, plan_changed=plan_changed,
+                   per_plan_changed=bool(per_adopted),
                    plan=plan_res, results=results,
                    eras=era_table(S, params))
     (cfg["data"]["db_path"].parent / "research.json").write_text(json.dumps(summary, ensure_ascii=False, default=float))
@@ -244,55 +250,71 @@ def _pooled(net, days, sel):
 
 
 def plan_search(con, cfg: dict, pl: pd.DataFrame, params: dict, vault_start, rng, vault_uses: int) -> dict:
+    """売買ルールの研究。全戦略共通のルール（AIの学習ラベルに使う）と、戦略ごとのルール
+    （決算後ドリフトのように長めに持つべき戦略があるため）を、同じ安全装置で探す。"""
     rc, lab = cfg["research"], cfg["labeling"]
     grid = rc["plan_grid"]
-    inc = dict(tp_atr=lab["tp_atr"], sl_atr=lab["sl_atr"], horizon_days=lab["horizon_days"])
+    glob = dict(tp_atr=lab["tp_atr"], sl_atr=lab["sl_atr"], horizon_days=lab["horizon_days"])
+    per = dict(lab.get("per_strategy") or {})
     plans = [dict(tp_atr=t, sl_atr=sl, horizon_days=h) for t in grid["tp_atr"] for sl in grid["sl_atr"] for h in grid["horizon_days"]]
-    if inc not in plans:
-        plans.append(inc)
+    for extra in [glob] + list(per.values()):
+        if extra not in plans:
+            plans.append(extra)
     Hmax = max(p["horizon_days"] for p in plans)
 
-    # 現在の戦略条件で拾われるシグナル全体で評価（売買ルールは全戦略共通）
-    sig = apply_flags(pl[["date", "code", "atr", "crisis"] + _flag_inputs(pl)], params)[["date", "code", "atr", "crisis"]]
+    sig = apply_flags(pl, params)[["date", "code", "atr", "crisis"] + [f"s_{s.key}" for s in STRATEGIES]]
     codes = sorted(sig["code"].unique())
     px = PriceStore(cfg["data"]["price_dir"]).load(codes=codes)
     c = px["close"].ffill(limit=5)
     o, h, l = (px[k].fillna(c) for k in ("open", "high", "low"))
     tix = {d: i for i, d in enumerate(c.index)}
     cix = {k: i for i, k in enumerate(c.columns)}
-    keep = sig["date"].map(tix).notna() & sig["code"].map(cix).notna()
-    sig = sig[keep].reset_index(drop=True)
-    ti = sig["date"].map(tix).to_numpy(int)
-    ci = sig["code"].map(cix).to_numpy(int)
-    paths = learner.forward_paths(*(x.to_numpy("float32") for x in (o, h, l, c)), ti, ci, Hmax)
-    atr = sig["atr"].to_numpy("float64")
+    sig = sig[sig["date"].map(tix).notna() & sig["code"].map(cix).notna()].reset_index(drop=True)
+    paths = learner.forward_paths(*(x.to_numpy("float32") for x in (o, h, l, c)),
+                                  sig["date"].map(tix).to_numpy(int), sig["code"].map(cix).to_numpy(int), Hmax)
+    del px, c, o, h, l
 
     dates = np.array(sorted(sig["date"].unique()))
     search_end = dates[max(0, np.searchsorted(dates, vault_start) - Hmax)]
-    in_s = (sig["date"] < search_end).to_numpy()
-    in_v = (sig["date"] >= vault_start).to_numpy()
-    years = sorted(sig.loc[in_s, "date"].dt.year.unique())
-    yidx = (sig["date"].dt.year - years[0]).clip(lower=0).to_numpy()
-    normal = sig["crisis"].to_numpy() == 0
-    log.info("売買ルールの研究: %d通り × %d件のシグナル", len(plans), int(in_s.sum()))
+    ctx = dict(in_s=(sig["date"] < search_end).to_numpy(), in_v=(sig["date"] >= vault_start).to_numpy(),
+               normal=sig["crisis"].to_numpy() == 0, atr=sig["atr"].to_numpy("float64"))
+    years = sorted(sig.loc[ctx["in_s"], "date"].dt.year.unique())
+    ctx["yidx"] = (sig["date"].dt.year - years[0]).clip(lower=0).to_numpy()
+    ctx["n_years"] = len(years)
+    log.info("売買ルールの研究: %d通り × %d件のシグナル（全体＋戦略ごと）", len(plans), int(ctx["in_s"].sum()))
 
+    state = dict(vault_uses=vault_uses)
+    out = _search_one(con, rc, "_plan", "全戦略共通", np.ones(len(sig), bool), glob, plans, paths, ctx, state)
+    out["per_strategy"] = []
+    for s in STRATEGIES:
+        m = sig[f"s_{s.key}"].to_numpy() == 1
+        if m.sum() < 200:
+            continue
+        r = _search_one(con, rc, f"_plan:{s.key}", s.name, m, per.get(s.key, glob), plans, paths, ctx, state)
+        r.update(strategy=s.key, name=s.name)
+        out["per_strategy"].append(r)
+    con.commit()
+    return out
+
+
+def _search_one(con, rc, key, name, mask, inc, plans, paths, ctx, state) -> dict:
+    sub = {k: (v[:, mask] if v.ndim == 2 else v[mask]) for k, v in paths.items()}
+    atr, in_s, in_v, normal, yidx = (ctx[k][mask] for k in ("atr", "in_s", "in_v", "normal", "yidx"))
     evals = []
     for p in plans:
-        r = learner.outcomes(paths, atr, p["tp_atr"], p["sl_atr"], p["horizon_days"])
+        r = learner.outcomes(sub, atr, p["tp_atr"], p["sl_atr"], p["horizon_days"])
         ok = r["complete"]
         net = np.where(ok, r["ret"] - rc["cost"], 0.0)
         days = np.where(ok, r["exit_days"], 0.0)
-        yearly = _annual(net, days, yidx, len(years), ok & in_s & normal, rc["min_trades_per_year"])
-        sc = _score(yearly, rc["min_years"])
-        evals.append(dict(plan=p, score=sc, yearly=yearly,
+        yearly = _annual(net, days, yidx, ctx["n_years"], ok & in_s & normal, rc["min_trades_per_year"])
+        evals.append(dict(plan=p, score=_score(yearly, rc["min_years"]), yearly=yearly,
                           crisis=_pooled(net, days, ok & in_s & ~normal),
                           vault=_pooled(net, days, ok & in_v), vault_n=int((ok & in_v).sum()),
                           win=float(r["label"][ok & in_s].mean()) if (ok & in_s).any() else None,
                           avg_days=float(days[ok & in_s].mean()) if (ok & in_s).any() else None))
     inc_e = next(e for e in evals if e["plan"] == inc)
     inc_sc = inc_e["score"]
-
-    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy='_plan'").fetchone()[0]
+    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy=?", (key,)).fetchone()[0]
     cum = int(prev + len(plans))
     cands = [e for e in evals if e["plan"] != inc and e["score"]
              and e["score"]["pos"] >= min(rc["min_positive_years"], inc_sc["pos"] if inc_sc else 1)
@@ -301,26 +323,27 @@ def plan_search(con, cfg: dict, pl: pd.DataFrame, params: dict, vault_start, rng
     best = max(cands, key=lambda e: e["score"]["median"]) if cands else None
     res = dict(incumbent=inc, inc_score=inc_sc and inc_sc["median"], inc_pos=inc_sc and inc_sc["pos"],
                inc_win=inc_e["win"], inc_days=inc_e["avg_days"], trials=len(plans), cum_trials=cum,
-               candidate=None, cand_score=None, t_stat=None, t_needed=None, vault_inc=None, vault_cand=None,
-               vault_n=0, adopted=False, reason="",
+               candidate=None, cand_score=None, cand_pos=None, t_stat=None, t_needed=None, vault_inc=None,
+               vault_cand=None, vault_n=0, adopted=False, reason="",
                top=[dict(plan=e["plan"], median=e["score"]["median"], pos=e["score"]["pos"], win=e["win"],
                          days=e["avg_days"], crisis=e["crisis"])
                     for e in sorted([e for e in evals if e["score"]], key=lambda e: -e["score"]["median"])[:12]])
     if best is None or inc_sc is None:
-        res["reason"] = "条件を満たす候補なし"
+        res["reason"] = "条件を満たす候補なし" if inc_sc else "データ不足"
     else:
         both = ~np.isnan(best["yearly"]) & ~np.isnan(inc_e["yearly"])
         diff = best["yearly"][both] - inc_e["yearly"][both]
         t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
         t = float(diff.mean() / (diff.std(ddof=1) / np.sqrt(len(diff)))) if len(diff) >= 3 and diff.std(ddof=1) > 0 else 0.0
-        res.update(candidate=best["plan"], cand_score=best["score"]["median"], t_stat=t, t_needed=t_needed)
+        res.update(candidate=best["plan"], cand_score=best["score"]["median"], cand_pos=best["score"]["pos"],
+                   t_stat=t, t_needed=t_needed)
         if t < t_needed:
             res["reason"] = f"改善が偶然の範囲（t={t:.2f} < 必要{t_needed:.2f}）"
         else:
             vc, vi = best["vault"], inc_e["vault"] or 0.0
-            margin = rc["plan_vault_margin"] * vault_uses
+            margin = rc["plan_vault_margin"] * state["vault_uses"]
             res.update(vault_inc=vi, vault_cand=vc, vault_n=best["vault_n"])
-            vault_uses += 1
+            state["vault_uses"] += 1
             if best["vault_n"] < rc["vault_min_trades"] or vc is None:
                 res["reason"] = f"金庫期間の取引が少なすぎる（{best['vault_n']}件）"
             elif vc < vi + margin:
@@ -328,13 +351,12 @@ def plan_search(con, cfg: dict, pl: pd.DataFrame, params: dict, vault_start, rng
             else:
                 res.update(adopted=True, reason=f"採用: 年率換算の中央値 {inc_sc['median']:+.1%}→{best['score']['median']:+.1%}、"
                                                  f"金庫でも {vi:+.1%}→{vc:+.1%}")
-    log.info("  売買ルール: %d通り（累計%d）→ %s", len(plans), cum, res["reason"])
+    log.info("  売買ルール（%s）: %d通り（累計%d）→ %s", name, len(plans), cum, res["reason"])
     con.execute("INSERT INTO research_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
-        datetime.now().isoformat(timespec="seconds"), "_plan", len(plans), cum, json.dumps(inc),
+        datetime.now().isoformat(timespec="seconds"), key, len(plans), cum, json.dumps(inc),
         json.dumps(res["candidate"]) if res["candidate"] else None, res["inc_score"], res["cand_score"],
-        res["t_stat"], res["t_needed"], res["vault_inc"], res["vault_cand"], res["vault_n"], vault_uses,
+        res["t_stat"], res["t_needed"], res["vault_inc"], res["vault_cand"], res["vault_n"], state["vault_uses"],
         int(res["adopted"]), res["reason"]))
-    con.commit()
     return res
 
 

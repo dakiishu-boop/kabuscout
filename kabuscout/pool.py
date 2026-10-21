@@ -16,13 +16,13 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import data, earnings, learner, regimes
+from . import data, earnings, events, learner, regimes, tdnet
 from .indicators import FEATURES, RAW_FIELDS, compute
 from .strategies import detect_all, loose_params
 
 log = logging.getLogger(__name__)
-POOL_VERSION = 2
-FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES))
+POOL_VERSION = 3
+FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES + events.EVENT_FEATURES))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
 RECENT_DAYS = 200    # 毎日計算し直す直近期間（暦日）
 
@@ -34,8 +34,8 @@ def _lookahead(cfg: dict) -> int:
 
 def _earn_stamp(cfg: dict) -> str:
     """決算データが増えたらシグナル表を作り直すための目印（週単位）。"""
-    ev = earnings.load(cfg)
-    return "" if ev is None else f"{ev['code'].nunique()//50}"
+    ev, td = earnings.load(cfg), tdnet.load(cfg)
+    return f"{0 if ev is None else ev['code'].nunique() // 50}-{0 if td is None else len(td) // 20000}"
 
 
 def _signature(cfg: dict) -> str:
@@ -64,7 +64,10 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     panel = {k: v[keep].astype("float32") for k, v in panel.items()}
 
     ind = compute(panel, proxy, uni.set_index("code")["sector33"])
-    ind.update(earnings.wide_features(earnings.load(cfg), ind["close"], ind["volume"], panel["close"][proxy].ffill()))
+    td = tdnet.load(cfg)
+    ev = earnings.combine(earnings.load(cfg), events.earnings_dates(td))
+    ind.update(earnings.wide_features(ev, ind["close"], ind["volume"], panel["close"][proxy].ffill()))
+    ind.update(events.wide_features(td, ind["close"]))
     ind = {k: v.astype("float32") for k, v in ind.items()}
     in_uni = pd.Series([c in set(codes) for c in ind["close"].columns], index=ind["close"].columns)
     mask = ((ind["turnover"] >= cfg["universe"]["min_turnover_jpy"])

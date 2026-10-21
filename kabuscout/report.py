@@ -30,6 +30,7 @@ def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_da
             strategies=[STRATEGY_NAMES.get(k, k) for k in r["strategies"].split(",")],
             prob=None if pd.isna(r["prob"]) else float(r["prob"]),
             close=float(r["close"]), tp=float(r["tp"]), sl=float(r["sl"]),
+            horizon=int(r["horizon"]) if "horizon" in r and r["horizon"] == r["horizon"] else cfg["labeling"]["horizon_days"],
             earnings_days=None if pd.isna(r["earnings_days"]) else int(r["earnings_days"]),
             reasons=r["reasons"], flows=_flows_text(r),
         ))
@@ -97,7 +98,7 @@ def to_markdown(rep: dict) -> str:
         prob = f" AI {p['prob']:.0%}" if p["prob"] is not None else ""
         L.append(f"{p['rank']}. **{p['code']} {p['name']}**【{'・'.join(p['strategies'])}】{prob} {_earn(p)}")
         L.append(f"   終値 {p['close']:,.0f} → 利確 {p['tp']:,.0f} ({_pct(p['tp'], p['close']):+.1%}) / "
-                 f"損切 {p['sl']:,.0f} ({_pct(p['sl'], p['close']):+.1%})")
+                 f"損切 {p['sl']:,.0f} ({_pct(p['sl'], p['close']):+.1%}) / 最長{p.get('horizon', '')}営業日")
         L.append(f"   {p['reasons']}")
         if p.get("flows"):
             L.append(f"   需給: {p['flows']}")
@@ -136,7 +137,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
             name=f"{mark} {p['code']} {p['name']}　{_earn(p)}",
             value=(f"🏷️ {' / '.join(p['strategies'])}\n"
                    f"```\n終値 {p['close']:>8,.0f}\n利確 {p['tp']:>8,.0f} ({_pct(p['tp'], p['close']):+.1%})\n"
-                   f"損切 {p['sl']:>8,.0f} ({_pct(p['sl'], p['close']):+.1%})```"
+                   f"損切 {p['sl']:>8,.0f} ({_pct(p['sl'], p['close']):+.1%})\n保有 最長{p.get('horizon', '')}営業日```"
                    f"{prob}[Yahoo]({yahoo})\n*{p['reasons']}*"
                    + (f"\n📊 {p['flows']}" if p.get("flows") else ""))[:1024],
             inline=False))
@@ -203,6 +204,16 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
             if P.get("candidate"):
                 lines.append(f"　最有力 {fmt(P['candidate'])}：年率 {P['cand_score']:+.1%}")
             adopted = adopted + ([P] if P["adopted"] else [])
+            per = P.get("per_strategy") or []
+            if per:
+                lines.append("")
+                lines.append("**戦略ごとの売買ルール**（現行の年率換算 → 最有力候補）")
+                for r in per:
+                    mark = "✅" if r["adopted"] else "・"
+                    cand = f" → {fmt(r['candidate'])} {r['cand_score']:+.1%}" if r.get("candidate") else ""
+                    lines.append(f"{mark} {r['name']}: {r['inc_score']:+.1%}{cand}（{r['reason']}）" if r.get("inc_score") is not None
+                                 else f"{mark} {r['name']}: {r['reason']}")
+                adopted = adopted + [r for r in per if r["adopted"]]
         embeds.append(dict(
             title="🔬 研究ループ: " + (f"{len(adopted)}つの戦略の条件を更新" if adopted else "条件の更新なし（現行が最善 or 改善が偶然の範囲）"),
             url=url or None, color=0x2CA02C if adopted else 0x808080, description="\n".join(lines)[:4000]))

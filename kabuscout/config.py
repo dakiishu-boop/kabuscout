@@ -46,8 +46,10 @@ def load_config(path: Path | None = None) -> dict:
     # 研究ループが採用した売買ルール（利確・損切・保有日数）があれば config.yaml の値より優先
     learned = cfg["data"]["db_path"].parent / "strategy_params.json"
     if learned.exists():
-        plan = json.loads(learned.read_text()).get("plan")
-        if plan:
-            cfg["labeling"].update(plan)
+        saved = json.loads(learned.read_text())
+        if saved.get("plan"):
+            cfg["labeling"].update(saved["plan"])
             cfg["labeling"]["learned"] = True
+        # 戦略ごとに採用された売買ルール（無い戦略は共通ルール）
+        cfg["labeling"]["per_strategy"] = saved.get("plans", {})
     return cfg

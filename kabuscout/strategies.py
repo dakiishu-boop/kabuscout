@@ -99,6 +99,16 @@ def earnings_drift(i, p):
             & (i["earn_surprise"].fillna(1e9) >= p["surp"]) & (i["earn_vol"] >= p["vol"]))
 
 
+def buyback(i, p):
+    # 自社株買いの決定を発表した直後（需給の改善・会社が割安と見ている合図）。すでに急騰した銘柄は除く
+    return (i["ev_buyback_age"] >= 0) & (i["ev_buyback_age"] <= p["age"]) & (i["dev25"] <= p["ext"])
+
+
+def forecast_up(i, p):
+    # 業績予想の上方修正の直後（決算発表以外のタイミングでの好材料）
+    return (i["ev_forecast_up_age"] >= 0) & (i["ev_forecast_up_age"] <= p["age"]) & (i["dev25"] <= p["ext"])
+
+
 STRATEGIES: list[Strategy] = [
     Strategy("pullback_25", "押し目(25日線)", "上昇トレンド中、出来高を細らせながら25日線まで調整し反転の兆し", pullback_25, dict(
         run=(0.02, 0.10, 0.05, 0.02), dev_lo=(-0.06, -0.01, -0.03, -0.06), dev_hi=(0.0, 0.04, 0.015, 0.04),
@@ -123,6 +133,10 @@ STRATEGIES: list[Strategy] = [
         mkt=(-0.04, -0.01, -0.02, -0.01), rs=(0.05, 0.20, 0.10, 0.05), band=(0.01, 0.05, 0.03, 0.05))),
     Strategy("earnings_drift", "決算好反応", "決算発表に市場が好反応（市場比+5%以上・大商い）した銘柄の、発表後数日以内", earnings_drift, dict(
         age=(1, 10, 5, 10), react=(0.02, 0.15, 0.05, 0.02), surp=(-50.0, 50.0, 0.0, -50.0), vol=(1.0, 3.0, 1.5, 1.0))),
+    Strategy("buyback", "自社株買い発表", "自社株買いの決定を発表した直後（急騰済みの銘柄は除く）", buyback, dict(
+        age=(0, 10, 3, 10), ext=(0.0, 0.20, 0.10, 0.20))),
+    Strategy("forecast_up", "業績上方修正", "業績予想の上方修正を発表した直後（急騰済みの銘柄は除く）", forecast_up, dict(
+        age=(0, 10, 3, 10), ext=(0.0, 0.20, 0.10, 0.20))),
 ]
 BY_KEY = {s.key: s for s in STRATEGIES}
 STRATEGY_NAMES = {s.key: s.name for s in STRATEGIES}
@@ -137,6 +151,15 @@ def load_params(path: Path) -> dict[str, dict]:
 
 def loose_params() -> dict[str, dict]:
     return {s.key: s.loose() for s in STRATEGIES}
+
+
+def plan_for(keys: list[str], labeling: dict) -> dict:
+    """そのシグナルに使う売買ルール。戦略ごとに採用されたルールがあればそれ（複数なら戦略一覧の先頭側）、無ければ共通ルール。"""
+    per = labeling.get("per_strategy") or {}
+    for s in STRATEGIES:
+        if s.key in keys and s.key in per:
+            return dict(per[s.key], source=s.key)
+    return dict(tp_atr=labeling["tp_atr"], sl_atr=labeling["sl_atr"], horizon_days=labeling["horizon_days"], source="")
 
 
 def detect_all(ind, mask, params: dict[str, dict]) -> dict[str, pd.DataFrame]:
@@ -186,6 +209,11 @@ def reasons(row: pd.Series, keys: list[str]) -> str:
     if row.get("earn_age") == row.get("earn_age") and row.get("earn_age", 99) <= 10:
         s = row.get("earn_surprise")
         parts.append(f"決算発表から{int(row['earn_age']) + 1}営業日・市場比{row['earn_react']:+.1%}" + (f"・サプライズ{s:+.0f}%" if s == s and s is not None else ""))
+    for k, label in (("ev_buyback_age", "自社株買い発表"), ("ev_forecast_up_age", "上方修正"), ("ev_dividend_up_age", "増配"),
+                     ("ev_offering_age", "⚠増資・新株発行"), ("ev_forecast_down_age", "⚠下方修正")):
+        a = row.get(k)
+        if a == a and a is not None and a <= 20:
+            parts.append(f"{label}から{int(a) + 1}営業日")
     if row.get("dist_high52", -1) > -0.03 and "breakout_52w" not in keys:
         parts.append("52週高値圏")
     return "・".join(parts)

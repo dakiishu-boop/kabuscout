@@ -56,9 +56,12 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         if shares == 0 or not np.isfinite(entry):
             con.execute("UPDATE paper_positions SET status='cancelled', reason='資金不足' WHERE id=?", (p["id"],))
             continue
-        tp, sl = entry + k_tp * p["atr"], entry - k_sl * p["atr"]
+        kt = p["tp_atr"] if pd.notna(p.get("tp_atr")) else k_tp
+        ks = p["sl_atr"] if pd.notna(p.get("sl_atr")) else k_sl
+        hz = int(p["horizon"]) if pd.notna(p.get("horizon")) else H
+        tp, sl = entry + kt * p["atr"], entry - ks * p["atr"]
         con.execute("UPDATE paper_positions SET status='open', entry_date=?, entry=?, shares=?, tp=?, sl=?, horizon=? WHERE id=?",
-                    (ed.strftime("%Y-%m-%d"), entry, shares, tp, sl, H, p["id"]))
+                    (ed.strftime("%Y-%m-%d"), entry, shares, tp, sl, hz, p["id"]))
         events.append(f"買 {p['code']} {p['name']} {shares}株 @{entry:,.0f}")
 
     # 2) 保有中 → 利確/損切/期限の判定（毎回エントリー日から再生するので実行漏れがあっても正しい）
@@ -85,14 +88,17 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         cand = picks[~picks["code"].isin(held)]
         if pc.get("min_prob") and cand["prob"].notna().any():
             cand = cand[cand["prob"] >= pc["min_prob"]]
-        cand = cand[cand["earnings_days"].isna() | (cand["earnings_days"] > H * 1.5)]  # 決算またぎは避ける
+        # 決算をまたいで持つと結果が読めなくなるので避ける（決算好反応のように発表後に買う戦略は次の決算まで余裕がある）
+        hz = cand["horizon"] if "horizon" in cand else H
+        cand = cand[cand["earnings_days"].isna() | (cand["earnings_days"] > hz * 1.5)]
         n_new = min(free, pc["picks_per_day"])
         if crisis:  # 特例（危機）局面では新規の買いを1銘柄に絞る
             n_new = min(n_new, 1)
         for _, r in cand.head(n_new).iterrows():
-            con.execute("INSERT INTO paper_positions(code,name,signal_date,status,atr,prob) VALUES (?,?,?,?,?,?)",
+            con.execute("INSERT INTO paper_positions(code,name,signal_date,status,atr,prob,tp_atr,sl_atr,horizon) VALUES (?,?,?,?,?,?,?,?,?)",
                         (r["code"], r["name"], data_date.strftime("%Y-%m-%d"), "pending", float(r["atr"]),
-                         None if pd.isna(r["prob"]) else float(r["prob"])))
+                         None if pd.isna(r["prob"]) else float(r["prob"]), float(r.get("tp_atr", k_tp)),
+                         float(r.get("sl_atr", k_sl)), int(r.get("horizon", H))))
             events.append(f"注文 {r['code']} {r['name']} (翌寄付)")
     con.commit()
     return summary(con, cfg, ind) | {"events": events}

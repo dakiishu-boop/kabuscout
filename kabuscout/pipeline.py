@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from . import data, earnings, flows, learner, notify, paper, pool, regimes, report, site
+from . import data, earnings, flows, learner, notify, paper, pool, regimes, report, site, tdnet
 from .db import connect
-from .strategies import apply_flags, load_params, reasons
+from .strategies import apply_flags, load_params, plan_for, reasons
 
 log = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
@@ -141,10 +141,12 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     top = scored.head(cfg["screening"]["top_n"]).copy()
     top["name"] = top["code"].map(names).fillna("")
     top["reasons"] = [reasons(r, r["strategies"].split(",")) for _, r in top.iterrows()]
-    H = cfg["labeling"]["horizon_days"]
-    k_tp, k_sl = cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"]
-    top["tp"] = top["close"] + k_tp * top["atr"]
-    top["sl"] = top["close"] - k_sl * top["atr"]
+    plans = [plan_for(k.split(","), cfg["labeling"]) for k in top["strategies"]]
+    top["tp_atr"] = [p["tp_atr"] for p in plans]
+    top["sl_atr"] = [p["sl_atr"] for p in plans]
+    top["horizon"] = [p["horizon_days"] for p in plans]
+    top["tp"] = top["close"] + top["tp_atr"] * top["atr"]
+    top["sl"] = top["close"] - top["sl_atr"] * top["atr"]
     n_e = cfg["screening"]["earnings_check_n"]
     top["earnings_days"] = [(_earnings_days(c, last) if i < n_e else np.nan) for i, c in enumerate(top["code"])]
     top["rank"] = range(1, len(top) + 1)
@@ -178,6 +180,15 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     """週末用: 研究ループ → （条件が変わったら）再学習 → 過去ペーパートレード → Webページ → 通知。"""
     from . import backtest, research as rs
     con = connect(cfg["data"]["db_path"])
+    if research:  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
+        uni = data.refresh_universe(con, cfg)
+        for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=60)),
+                         ("適時開示", lambda: tdnet.update(cfg, max_minutes=120))):
+            try:
+                fn()
+            except Exception as e:
+                log.warning("%sの更新に失敗: %s", name, e)
+        pool.refresh(store_of(cfg), cfg, uni, _usable_date(store_of(cfg), _cutoff()))
     pl = pool.load(cfg)
     if pl is None:
         raise SystemExit("シグナル表がありません。先に daily を実行してください")
@@ -202,7 +213,8 @@ def collect_extra(cfg: dict, uni: pd.DataFrame) -> None:
     """通知の後に、翌日以降に使う追加データを集める（初回の大量取得で通知が遅れないように）。"""
     lim = cfg.get("earnings", {}).get("max_minutes", 30)
     for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=lim)),
-                     ("需給データ", lambda: flows.collect(cfg))):
+                     ("需給データ", lambda: flows.collect(cfg)),
+                     ("適時開示", lambda: tdnet.update(cfg, max_minutes=lim))):
         try:
             fn()
         except Exception as e:

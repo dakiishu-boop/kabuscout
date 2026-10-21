@@ -80,6 +80,19 @@ def load(cfg: dict) -> pd.DataFrame | None:
     return pd.read_parquet(path) if path.exists() else None
 
 
+def combine(yahoo: pd.DataFrame | None, extra: pd.DataFrame | None, tol_days: int = 3) -> pd.DataFrame | None:
+    """Yahoo の決算情報（サプライズ率つき）に、TDnet の決算短信の日付を補う（同じ決算は Yahoo を優先）。"""
+    if extra is None or extra.empty:
+        return yahoo
+    if yahoo is None or yahoo.empty:
+        return extra
+    y = yahoo[["code", "date", "surprise"]].sort_values("date")
+    e = extra.sort_values("date")
+    m = pd.merge_asof(e, y[["code", "date"]].rename(columns={"date": "ydate"}), left_on="date", right_on="ydate",
+                      by="code", direction="nearest", tolerance=pd.Timedelta(days=tol_days))
+    return pd.concat([y, e[m["ydate"].isna().to_numpy()]], ignore_index=True)
+
+
 def wide_features(ev: pd.DataFrame | None, close: pd.DataFrame, volume: pd.DataFrame, mkt: pd.Series,
                   max_age: int = 60) -> dict[str, pd.DataFrame]:
     """決算イベントを「日付×銘柄」の行列にする。値は発表日の翌営業日から max_age 営業日まで有効。

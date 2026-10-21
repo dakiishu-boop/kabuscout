@@ -67,13 +67,15 @@ def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     cix = {k: i for i, k in enumerate(c.columns)}
     arrs = [x.to_numpy("float32") for x in (o, h, l, c)]
     preds = preds.copy()
+    # 新しい pandas は型の違う値の書き込みを拒否するので、書き込む列の型を先に揃える
+    preds = preds.astype({"ret": "float64", "exit_days": "float64", "label": "float64", "complete": "bool"})
     for (kt, ks, hz), g in todo.groupby("_plan"):
         p = learner.forward_paths(*arrs, g["date"].map(tix).to_numpy(int), g["code"].map(cix).to_numpy(int), int(hz))
         r = learner.outcomes(p, g["atr"].to_numpy(float), kt, ks, int(hz))
-        preds.loc[g.index, "ret"] = r["ret"]
-        preds.loc[g.index, "label"] = r["label"]
-        preds.loc[g.index, "exit_days"] = r["exit_days"]
-        preds.loc[g.index, "complete"] = r["complete"]
+        preds.loc[g.index, "ret"] = np.asarray(r["ret"], dtype="float64")
+        preds.loc[g.index, "label"] = np.asarray(r["label"], dtype="float64")
+        preds.loc[g.index, "exit_days"] = np.asarray(r["exit_days"], dtype="float64")
+        preds.loc[g.index, "complete"] = np.asarray(r["complete"], dtype=bool)
     log.info("  戦略ごとの売買ルールで %d件の結果を計算し直しました", len(todo))
     return preds.drop(columns="_plan").assign(_relabeled=1)
 

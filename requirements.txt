@@ -1,12 +1,13 @@
-yfinance>=0.2.54
-pandas>=2.0
-numpy
-scikit-learn>=1.3
-joblib
+# 手元（Python 3.9）で動作確認しているバージョンにクラウドも合わせる
+yfinance==1.2.0
+pandas==2.3.3
+numpy==2.0.2
+scikit-learn==1.6.1
+joblib==1.5.3
 pyyaml
 requests
 openpyxl
 jpholiday
-pyarrow
+pyarrow==21.0.0
 pypdf
 lxml

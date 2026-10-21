@@ -19,9 +19,11 @@ from zoneinfo import ZoneInfo
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import Pipeline
 
 from .dividends import DIV_FEATURES
 from .earnings import EARN_FEATURES
@@ -166,8 +168,13 @@ def _merit(m: dict) -> float:
 
 
 def _fit(params: dict, X, y, w):
-    m = HistGradientBoostingClassifier(random_state=42, **params)
-    m.fit(X, y, sample_weight=w)
+    """学習期間に値が無い（または1種類しかない）特徴量は外して学習する。
+    例: 2008年までのデータには適時開示がまだ無い。新しい scikit-learn はこうした列でエラーになる。
+    列の選択ごと1つのモデルにまとめるので、予測時は全特徴量をそのまま渡せばよい。"""
+    cols = [c for c in X.columns if X[c].nunique(dropna=True) >= 2]
+    m = Pipeline([("cols", ColumnTransformer([("keep", "passthrough", cols)], remainder="drop")),
+                  ("hgb", HistGradientBoostingClassifier(random_state=42, **params))])
+    m.fit(X, y, hgb__sample_weight=w)
     return m
 
 

@@ -47,10 +47,11 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int) -> pd.DataFrame:
 
 
 def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """戦略ごとの売買ルールが採用されていれば、そのルールで各取引の結果を計算し直す（本番と同じ条件にする）。"""
+    """戦略ごとの売買ルールが採用されていれば、そのルールで各取引の結果（損益・保有日数）を計算し直す
+    （過去ペーパートレードを本番と同じ売買ルールで行うため）。"""
     from .strategies import plan_for
     lab = cfg["labeling"]
-    if not lab.get("per_strategy"):
+    if not lab.get("per_strategy") or "_relabeled" in preds.columns:
         return preds
     plans = [plan_for(k.split(","), lab) for k in preds["strategies"]]
     key = [(p["tp_atr"], p["sl_atr"], p["horizon_days"]) for p in plans]
@@ -70,10 +71,11 @@ def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         p = learner.forward_paths(*arrs, g["date"].map(tix).to_numpy(int), g["code"].map(cix).to_numpy(int), int(hz))
         r = learner.outcomes(p, g["atr"].to_numpy(float), kt, ks, int(hz))
         preds.loc[g.index, "ret"] = r["ret"]
+        preds.loc[g.index, "label"] = r["label"]
         preds.loc[g.index, "exit_days"] = r["exit_days"]
         preds.loc[g.index, "complete"] = r["complete"]
     log.info("  戦略ごとの売買ルールで %d件の結果を計算し直しました", len(todo))
-    return preds[preds["complete"]].drop(columns="_plan")
+    return preds.drop(columns="_plan").assign(_relabeled=1)
 
 
 def gate_active(gate: dict | None, mkt_dev75: float, mkt_ret20: float, crisis: bool) -> bool:
@@ -142,6 +144,7 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
     bc = cfg["backtest"]
     if preds is None:
         preds = apply_plans(walk_forward(cfg, ds, bc["start_year"]), cfg)
+        preds = preds[preds["complete"]]
     proxy = cfg["universe"]["market_proxy"]
     m = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna()
     cal = m.index[m.index >= preds["date"].min()]

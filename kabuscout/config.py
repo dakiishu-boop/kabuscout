@@ -36,7 +36,7 @@ def load_config(path: Path | None = None) -> dict:
     _load_dotenv()
     path = path or ROOT / "config.yaml"
     cfg = _expand(yaml.safe_load(path.read_text()))
-    for key in ("db_path", "model_dir", "report_dir"):
+    for key in ("db_path", "model_dir", "report_dir", "price_dir", "pool_path"):
         p = Path(cfg["data"][key])
         cfg["data"][key] = p if p.is_absolute() else ROOT / p
     cfg["data"]["model_dir"].mkdir(parents=True, exist_ok=True)

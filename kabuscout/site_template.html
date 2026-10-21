@@ -108,6 +108,21 @@ details .tbl { padding: 0 6px 8px; }
 .barrow { display: grid; grid-template-columns: 9.5em 1fr 3.5em; gap: 8px; align-items: center; font-size: 13px; padding: 3px 0; }
 .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
 .note { font-size: 12px; color: var(--muted); margin-top: 24px; }
+.banner { margin: 12px 0 0; padding: 10px 14px; border-radius: 10px; font-size: 13.5px; line-height: 1.55;
+  background: color-mix(in srgb, var(--up) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--up) 35%, transparent); }
+.seg { display: inline-flex; background: var(--surface2); border-radius: 10px; padding: 3px; gap: 2px; margin-bottom: 14px; }
+.seg button { appearance: none; border: 0; background: none; font: inherit; font-size: 13.5px; padding: 6px 12px; border-radius: 8px;
+  color: var(--muted); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+.lg { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.lg i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.evchip { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 5px; margin: 1px 2px 1px 0;
+  background: color-mix(in srgb, var(--up) 12%, transparent); color: var(--up); white-space: nowrap; }
+.caveat { font-size: 12.5px; color: var(--muted); background: var(--surface2); border-radius: 10px; padding: 10px 14px; margin-top: 12px; }
+.caveat li { margin: 2px 0; }
+.timeline { list-style: none; margin: 0; padding: 0; }
+.timeline li { display: grid; grid-template-columns: 6.5em 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.timeline li:last-child { border-bottom: 0; }
 .toggle { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: 8px;
   font: inherit; font-size: 12px; padding: 2px 8px; cursor: pointer; margin-left: 8px; }
 </style>
@@ -155,7 +170,7 @@ const FEAT = {
   vol5_20: "出来高の細り", turnover_log: "売買代金", price_log: "株価水準", dist_high52: "52週高値からの距離",
   dist_low52: "52週安値からの距離", pullback20: "20日高値からの下落", rebound5: "5日安値からの戻り",
   down_streak: "連続下落日数", body: "ローソク実体", lower_shadow: "下ヒゲ", upper_shadow: "上ヒゲ", close_pos: "引け位置",
-  gap: "窓", rs20: "対TOPIX(20日)", rs60: "対TOPIX(60日)", rs_sector20: "業種内の強さ", n_strat: "重なった戦略数",
+  gap: "窓", rs20: "対日経平均(20日)", rs60: "対日経平均(60日)", rs_sector20: "業種内の強さ", n_strat: "重なった戦略数",
 };
 const featName = k => k.startsWith("s_") ? "戦略: " + stratName(k.slice(2)) : (FEAT[k] || k);
 
@@ -216,10 +231,12 @@ function renderToday() {
   const m = s.market;
   let h = `<div class="strip">
     <div><div class="k">地合い</div><div class="v"><span class="pill mood-${m.mood}">${m.mood}</span></div></div>
-    <div><div class="k">TOPIX 75日線乖離</div><div class="v ${cls(m.mkt_dev75)}">${pct(m.mkt_dev75)}</div></div>
+    <div><div class="k">日経平均 75日線乖離</div><div class="v ${cls(m.mkt_dev75)}">${pct(m.mkt_dev75)}</div></div>
     <div><div class="k">25日線より上の銘柄</div><div class="v">${pct0(m.breadth25)}</div></div>
     <div><div class="k">走査 → シグナル</div><div class="v">${s.n_scanned.toLocaleString()}<span class="muted small"> → ${s.n_signals}件</span></div></div>
   </div>`;
+  if (s.regime && s.regime.crisis) h += `<div class="banner">⚠️ <b>平常時と違う相場（特例モード）: ${esc(s.regime.event)}</b><br>
+    過去の危機局面では値動きの法則が崩れやすく、AIの判断も平常時ほど当てになりません。ペーパートレードの新規買いは1銘柄に絞っています。</div>`;
   h += `<h2>注目銘柄 TOP${s.picks.length}</h2><div class="grid">`;
   for (const p of s.picks) {
     const ew = p.earnings_days != null && p.earnings_days <= 14 ? `<span class="chip warn">⚠ 決算まで${p.earnings_days}日</span>` : "";
@@ -280,7 +297,20 @@ const avg = a => a.length ? a.reduce((x, r) => x + r.ret, 0) / a.length : null;
 
 // ---------------------------------------------------------------- ペーパートレード
 function renderPaper() {
-  const el = $("#paper"), P = DATA.positions, cap = DATA.config.capital;
+  const el = $("#paper");
+  el.innerHTML = `<div class="seg" role="group" aria-label="表示切替">
+      <button data-seg="live" aria-pressed="true">本番（これからの記録）</button>
+      <button data-seg="bt" aria-pressed="false">過去で試した場合</button></div>
+    <div id="seg-live"></div><div id="seg-bt" hidden></div>`;
+  el.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+    el.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    $("#seg-live").hidden = b.dataset.seg !== "live"; $("#seg-bt").hidden = b.dataset.seg !== "bt";
+  }));
+  renderLive($("#seg-live")); renderBacktest($("#seg-bt"));
+}
+
+function renderLive(el) {
+  const P = DATA.positions, cap = DATA.config.capital;
   const open = P.filter(p => p.status === "open"), pend = P.filter(p => p.status === "pending");
   const closed = P.filter(p => p.status === "closed").sort((a, b) => a.exit_date < b.exit_date ? -1 : 1);
   const realized = closed.reduce((s, p) => s + p.pnl, 0);
@@ -319,7 +349,58 @@ function renderPaper() {
   else h += `<div class="card tbl"><table><thead><tr><th>決済日</th><th>銘柄</th><th class="num">買値</th><th class="num">売値</th><th class="num">損益</th><th>理由</th><th class="num">日数</th></tr></thead><tbody>` +
     closed.slice().reverse().map(p => `<tr><td>${dLabel(p.exit_date)}</td><td>${esc(p.code)} ${esc(p.name)}</td><td class="num">${yen(p.entry)}</td><td class="num">${yen(p.exit)}</td>
       <td class="num ${cls(p.pnl)}">${sgnYen(p.pnl)}</td><td>${esc(p.reason)}</td><td class="num">${p.days_held}</td></tr>`).join("") + `</tbody></table></div>`;
-  h += `<p class="small muted">ルール: 毎日AI順位の高い順に最大2銘柄を、翌営業日の寄付きで100株単位・1銘柄あたり評価額の1/${DATA.config.max_positions}まで買う。決算発表をまたぐ銘柄は買わない。</p>`;
+  h += `<p class="small muted">ルール: 毎日AI順位の高い順に最大2銘柄（危機局面では1銘柄）を、翌営業日の寄付きで100株単位・1銘柄あたり評価額の1/${DATA.config.max_positions}まで買う。決算発表をまたぐ銘柄は買わない。</p>`;
+  el.innerHTML = h;
+}
+
+function logChart(series, shades) {
+  const W = 640, H = 240, pL = 6, pR = 54, pT = 8, pB = 18;
+  const all = series.flatMap(s => s.points.map(p => p[1])).filter(v => v > 0);
+  let mx = Math.log(Math.max(...all)), mn = Math.log(Math.min(...all)); const r = mx - mn || 1; mx += r * .05; mn -= r * .05;
+  const t0 = Date.parse(series[0].points[0][0]), t1 = Date.parse(series[0].points[series[0].points.length - 1][0]);
+  const x = d => pL + (Date.parse(d) - t0) / (t1 - t0) * (W - pL - pR), y = v => pT + (mx - Math.log(v)) / (mx - mn) * (H - pT - pB);
+  let g = "";
+  for (const sh of shades) {
+    const a = Math.max(Date.parse(sh.start), t0), b = Math.min(Date.parse(sh.end), t1);
+    if (b <= a) continue;
+    g += `<rect x="${x(new Date(a).toISOString().slice(0, 10))}" y="${pT}" width="${Math.max(1.5, (b - a) / (t1 - t0) * (W - pL - pR))}" height="${H - pT - pB}" fill="var(--up)" opacity=".1"><title>${esc(sh.name)}</title></rect>`;
+  }
+  for (const v of [2e5, 5e5, 1e6, 2e6, 3e6, 5e6, 1e7, 2e7, 3e7, 5e7]) if (Math.log(v) > mn && Math.log(v) < mx)
+    g += `<line x1="${pL}" x2="${W - pR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--border)"/><text x="${W - pR + 4}" y="${y(v) + 4}" font-size="10.5" fill="var(--muted)">${v / 1e4}万</text>`;
+  for (const s of series) {
+    const d = s.points.filter(p => p[1] > 0).map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(p[1]).toFixed(1)).join("");
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.w || 1.6}"/>`;
+  }
+  const years = []; for (let yy = new Date(t0).getFullYear() + 1; yy <= new Date(t1).getFullYear(); yy += 3) years.push(yy);
+  g += years.map(yy => `<text x="${x(yy + "-01-01")}" y="${H - 4}" font-size="10.5" fill="var(--muted)" text-anchor="middle">${yy}</text>`).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="過去でのペーパートレードの資産推移（対数目盛）">${g}</svg>`;
+}
+
+function renderBacktest(el) {
+  const B = DATA.backtest;
+  if (!B) { el.innerHTML = `<div class="card empty">週末の研究ループ実行後に表示されます</div>`; return; }
+  const S = B.stats, col = {ai: "var(--accent)", random: "#9aa3ad", index: "#e08a1e"};
+  const card = (k, name, sub) => `<div class="card kpi"><div class="k">${name}</div><div class="v ${cls(S[k].cagr)}">${pct(S[k].cagr)}</div>
+    <div class="s">年率 ／ 最大下落 ${pct0(S[k].max_dd)}${sub || ""}</div></div>`;
+  let h = `<p class="small muted" style="margin-top:0">${B.start.slice(0, 4)}年〜${B.end.slice(0, 4)}年を、毎年「その年より前のデータだけで学習したAI」で売買した結果（ウォークフォワード）。
+    取引コスト ${pct(B.cost, 1).replace("+", "")}/往復 を差し引き済み。</p>
+  <div class="kpis">${card("ai", "AIが選んだ場合", S.ai.trades ? `<br>${S.ai.trades.toLocaleString()}回・勝率${pct0(S.ai.win)}` : "")}
+    ${card("random", "同じシグナルからランダム")}${card("index", "日経平均を持ち続けた場合")}
+    <div class="card kpi"><div class="k">AIの上乗せ（対ランダム）</div><div class="v ${cls(S.ai.cagr - S.random.cagr)}">${pct(S.ai.cagr - S.random.cagr)}</div><div class="s">年率の差</div></div></div>
+  <h2>資産の推移（対数目盛・赤い帯は危機局面）</h2><div class="card pad">
+    <div class="lg"><span><i style="background:${col.ai}"></i>AI選定</span><span><i style="background:${col.random}"></i>ランダム選定</span><span><i style="background:${col.index}"></i>日経平均</span><span><i style="background:var(--up);opacity:.25;height:8px"></i>危機局面</span></div>
+    ${logChart([{points: B.curve.index, color: col.index}, {points: B.curve.random, color: col.random}, {points: B.curve.ai, color: col.ai, w: 2.2}], B.crisis_periods)}</div>
+  <h2>年ごとの成績</h2><div class="card tbl"><table><thead><tr><th>年</th><th class="num">AI</th><th class="num">ランダム</th><th class="num">日経平均</th><th class="num hide-sm">取引</th><th class="num hide-sm">勝率</th><th>その年の特例</th></tr></thead><tbody>` +
+    B.years.slice().reverse().map(r => `<tr><td><b>${r.year}</b><div class="muted small">${esc(r.era)}</div></td>
+      <td class="num ${cls(r.ai)}"><b>${pct(r.ai)}</b></td><td class="num ${cls(r.random)}">${pct(r.random)}</td><td class="num ${cls(r.index)}">${pct(r.index)}</td>
+      <td class="num hide-sm">${r.trades}</td><td class="num hide-sm">${pct0(r.win)}</td>
+      <td style="white-space:normal">${r.events.map(e => `<span class="evchip">${esc(e)}</span>`).join("")}${r.crisis_share > .05 ? `<span class="muted small">危機日 ${pct0(r.crisis_share)}</span>` : ""}</td></tr>`).join("") +
+  `</tbody></table></div>
+  <div class="caveat"><b>この結果を読むときの注意</b><ul style="margin:6px 0 0;padding-left:1.2em">
+    <li>戦略の条件（押し目の深さなど）自体は過去データを見て作っているため、その分だけ実際より良く見えやすい</li>
+    <li>対象は<b>今も上場している銘柄だけ</b>。途中で倒産・上場廃止した銘柄が含まれない（生存者バイアス）ため、特に古い年ほど良く見えやすい</li>
+    <li>2018年10月以前は1000株単位の銘柄も多かったが、ここでは売買単位を無視して金額で按分している</li>
+    <li>危機局面（赤い帯）では本番と同じく新規の買いを1銘柄に絞っている</li></ul></div>`;
   el.innerHTML = h;
 }
 
@@ -332,10 +413,10 @@ function renderAI() {
   let h = `<div class="kpis">
     <div class="card kpi"><div class="k">AIの実力</div><div class="v" style="font-size:17px">${edge}</div><div class="s">ルールとの配合 AI ${pct0(m.alpha)}</div></div>
     <div class="card kpi"><div class="k">上位推奨の勝率</div><div class="v">${pct0(m.daily_top_win)}</div><div class="s">全シグナル平均 ${pct0(m.base_win)}</div></div>
-    <div class="card kpi"><div class="k">上位推奨の期待値</div><div class="v ${cls(m.daily_top_ret)}">${pct(m.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.base_ret, 2)}</div></div>
+    <div class="card kpi"><div class="k">上位推奨の期待値（コスト控除前）</div><div class="v ${cls(m.daily_top_ret)}">${pct(m.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.base_ret, 2)}</div></div>
     <div class="card kpi"><div class="k">学習データ</div><div class="v">${(act.n_train || 0).toLocaleString()}件</div><div class="s">モデル v${esc(act.version)}</div></div>
   </div>
-  <p class="small muted">成績は「学習に使っていない期間（${esc(m.holdout_from || "")}〜）」で測ったもの。5営業日ごとに再学習し、新旧モデルを未知の期間で対決させて勝った方を採用しています。判定: ${esc(m.verdict || "")}</p>`;
+  <p class="small muted">成績は「学習に使っていない期間（${esc(m.holdout_from || "")}〜）」で測ったもの（取引コスト控除前。0.2%/往復を引くと研究ループの数字と同じ基準）。5営業日ごとに再学習し、新旧モデルを未知の期間で対決させて勝った方を採用しています。判定: ${esc(m.verdict || "")}</p>`;
   if (m.importance && m.importance.length) {
     const mx = Math.max(...m.importance.map(t => t[1]), 1e-9);
     h += `<h2>AIが重視している要素</h2><div class="card pad">` + m.importance.map(([k, v]) =>
@@ -348,6 +429,32 @@ function renderAI() {
         <td class="num">${s.n}</td><td class="num">${pct0(s.win_rate)}</td><td class="num ${cls(s.avg_ret)}">${pct(s.avg_ret, 2)}</td>
         <td><div style="display:flex;align-items:center;gap:6px"><div class="bar" style="width:${s.weight / mx * 80}px"></div><span class="small">×${s.weight.toFixed(2)}</span></div></td></tr>`).join("") + `</tbody></table></div>`;
   }
+  if (m.normal && m.crisis) h += `<h2>平常時と危機局面での成績（学習に使っていない期間）</h2><div class="kpis">
+    <div class="card kpi"><div class="k">平常時の上位推奨</div><div class="v ${cls(m.normal.daily_top_ret)}">${pct(m.normal.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.normal.base_ret, 2)}・${(m.normal.n || 0).toLocaleString()}件</div></div>
+    <div class="card kpi"><div class="k">危機局面の上位推奨</div><div class="v ${cls(m.crisis.daily_top_ret)}">${pct(m.crisis.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.crisis.base_ret, 2)}・${(m.crisis.n || 0).toLocaleString()}件</div></div></div>
+    <p class="small muted">危機局面（リーマン・コロナ等）のデータは捨てずに学習していますが、重みを${pct0(DATA.config.crisis_weight)}に下げて「特例」として扱っています。</p>`;
+  const R = DATA.research;
+  if (R) {
+    h += `<h2>研究ループ（${esc(R.run_at.slice(0, 10))}）</h2>
+      <p class="small muted" style="margin-top:0">探索 ${esc(R.search_from)}〜${esc(R.search_to)} ／ 金庫（研究中は見ない最終確認用）${esc(R.vault_from)}〜 ／ コスト ${pct(R.cost, 1).replace("+", "")}/往復 を差し引いて評価。
+      試した数が増えるほど合格ラインが厳しくなります。</p>
+      <div class="card tbl"><table><thead><tr><th>戦略</th><th class="num">試行(累計)</th><th class="num">現行の実力</th><th>結果</th></tr></thead><tbody>` +
+      R.results.map(r => `<tr><td><b>${esc(r.name)}</b></td><td class="num">${r.trials}<span class="muted small">(${r.cum_trials})</span></td>
+        <td class="num ${cls(r.inc_score)}">${pct(r.inc_score, 2)}<div class="muted small">${r.profitable ? "実用水準" : "コスト負け"}</div></td>
+        <td class="small" style="white-space:normal;min-width:14em">${r.adopted ? "✅ " : ""}${esc(r.reason)}</td></tr>`).join("") +
+      `</tbody></table></div><p class="small muted">「現行の実力」は平常時の年ごとの1取引あたり損益（コスト控除後）の中央値。</p>`;
+    if (R.eras && R.eras.length) {
+      const eras = [...new Set(R.eras.map(e => e.era))];
+      const cell = (k, era, rg) => { const e = R.eras.find(x => x.strategy === k && x.era === era && x.regime === rg); return e ? `<span class="${cls(e.net)}">${pct(e.net, 2)}</span>` : "-"; };
+      h += `<h2>時代ごとの戦略の成績（平常時 ／ <span class="up">危機局面</span>）</h2><div class="card tbl"><table><thead><tr><th>戦略</th>${eras.map(e => `<th class="num" style="white-space:normal;min-width:7em">${esc(e)}</th>`).join("")}</tr></thead><tbody>` +
+        [...new Set(R.eras.map(e => e.strategy))].map(k => `<tr><td><b>${esc(stratName(k))}</b></td>${eras.map(era => `<td class="num">${cell(k, era, "平常時")}<div class="small">${cell(k, era, "危機局面")}</div></td>`).join("")}</tr>`).join("") +
+        `</tbody></table></div>`;
+    }
+  }
+  h += `<h2>考慮している世の中の出来事</h2><div class="card pad"><ul class="timeline">` +
+    DATA.events.slice().sort((a, b) => a.start < b.start ? 1 : -1).map(e => `<li><span class="small ${e.kind === "crisis" ? "up" : "muted"}">${e.start.slice(0, 7).replace("-", "/")}<br>${e.kind === "crisis" ? "危機（特例）" : "制度・前提の変化"}</span>
+      <span><b>${esc(e.name)}</b><div class="muted small">${esc(e.note)}</div></span></li>`).join("") +
+    `</ul><p class="small muted">これに加えて、日経平均の変動率や下落率から「平常時と違う相場」を自動で検知し、未知の急変も特例として扱います。</p></div>`;
   h += `<h2>モデルの世代交代</h2><div class="card tbl"><table><thead><tr><th>バージョン</th><th class="num">学習件数</th><th class="num">上位勝率</th><th class="num">上位期待値</th><th></th></tr></thead><tbody>` +
     DATA.models.map(x => `<tr><td>${esc(x.version)}</td><td class="num">${(x.n_train || 0).toLocaleString()}</td><td class="num">${pct0(x.metrics.daily_top_win)}</td>
       <td class="num ${cls(x.metrics.daily_top_ret)}">${pct(x.metrics.daily_top_ret, 2)}</td><td>${x.active ? '<span class="pill mood-強気">現役</span>' : ""}</td></tr>`).join("") + `</tbody></table></div>`;

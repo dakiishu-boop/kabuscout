@@ -30,7 +30,7 @@ def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: flo
     return None, None, None, len(idx) - start
 
 
-def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp) -> dict:
+def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp, crisis: bool = False) -> dict:
     pc = cfg["paper_trading"]
     H = cfg["labeling"]["horizon_days"]
     k_tp, k_sl = cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"]
@@ -85,7 +85,10 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         if pc.get("min_prob") and cand["prob"].notna().any():
             cand = cand[cand["prob"] >= pc["min_prob"]]
         cand = cand[cand["earnings_days"].isna() | (cand["earnings_days"] > H * 1.5)]  # 決算またぎは避ける
-        for _, r in cand.head(min(free, pc["picks_per_day"])).iterrows():
+        n_new = min(free, pc["picks_per_day"])
+        if crisis:  # 特例（危機）局面では新規の買いを1銘柄に絞る
+            n_new = min(n_new, 1)
+        for _, r in cand.head(n_new).iterrows():
             con.execute("INSERT INTO paper_positions(code,name,signal_date,status,atr,prob) VALUES (?,?,?,?,?,?)",
                         (r["code"], r["name"], data_date.strftime("%Y-%m-%d"), "pending", float(r["atr"]),
                          None if pd.isna(r["prob"]) else float(r["prob"])))

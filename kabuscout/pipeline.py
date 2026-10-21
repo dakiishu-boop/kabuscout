@@ -5,19 +5,17 @@ import logging
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-import numpy as np
-import pandas as pd
-import yfinance as yf
-
 import json
 import time
 
 import jpholiday
+import numpy as np
+import pandas as pd
+import yfinance as yf
 
-from . import data, learner, notify, paper, report, site
+from . import data, learner, notify, paper, pool, regimes, report, site
 from .db import connect
-from .indicators import compute
-from .strategies import detect_all, reasons
+from .strategies import apply_flags, load_params, reasons
 
 log = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
@@ -59,12 +57,14 @@ def wait_for_close_data(cfg: dict) -> None:
         log.info("引け後データの確定待ち: %s まで %d 秒", ready.strftime("%H:%M"), (ready - now).seconds)
         time.sleep((ready - now).seconds)
     deadline = time.time() + 60 * sc.get("max_wait_min", 45)
-    proxy = cfg["universe"]["market_proxy"] + ".T"
+    # 指数ETFと主力株の両方で当日の足が出ているかを確認
+    probe = [data.ticker(cfg["universe"]["market_proxy"]), "7203.T", "8306.T", "6758.T", "9984.T"]
     today = datetime.now(JST).strftime("%Y-%m-%d")
     while time.time() < deadline:
         try:
-            df = yf.download(proxy, period="5d", progress=False, auto_adjust=False)
-            if len(df) and df.index[-1].strftime("%Y-%m-%d") == today:
+            df = yf.download(probe, period="5d", progress=False, auto_adjust=False, group_by="ticker")
+            closes = df.xs("Close", axis=1, level=1)
+            if len(closes) and closes.index[-1].strftime("%Y-%m-%d") == today and closes.iloc[-1].notna().all():
                 return
         except Exception as e:
             log.warning("確認失敗: %s", e)
@@ -73,27 +73,30 @@ def wait_for_close_data(cfg: dict) -> None:
     log.warning("当日の株価が確認できないまま実行します")
 
 
-def build(con, cfg: dict, uni: pd.DataFrame):
-    """全期間の指標・シグナル・ラベル付きデータセットを作る。"""
-    proxy = cfg["universe"]["market_proxy"]
-    codes = uni["code"].tolist()
-    panel = data.load_panel(con, codes=codes + [proxy])
-    cutoff = _cutoff()
-    panel = {k: v[v.index <= cutoff] for k, v in panel.items()}
-    # メモリ節約: 一度も流動性基準を満たしたことのない銘柄は除外
-    tv = (panel["close"] * panel["volume"]).rolling(20, min_periods=10).mean().max()
-    keep = [c for c in panel["close"].columns if tv.get(c, 0) >= cfg["universe"]["min_turnover_jpy"] or c == proxy]
-    panel = {k: v[keep].astype("float32") for k, v in panel.items()}
+def _usable_date(store, cutoff: pd.Timestamp) -> pd.Timestamp:
+    """全銘柄の8割以上の株価が揃っている最新日。Yahoo 側の更新途中や不具合で
+    一部の銘柄しか当日の足が無いときに、古い値で判定してしまうのを防ぐ。"""
+    c = store.load(start=(cutoff - pd.Timedelta(days=30)).strftime("%Y-%m-%d"),
+                   end=cutoff.strftime("%Y-%m-%d"), fields=["close"])["close"]
+    cnt = c.notna().sum(axis=1)
+    ok = cnt[cnt >= 0.8 * cnt.max()]
+    if ok.index[-1] != cnt.index[-1]:
+        log.warning("%s は株価が揃っていない（%d/%d銘柄）ため、%s のデータで判定します",
+                    cnt.index[-1].date(), cnt.iloc[-1], int(cnt.max()), ok.index[-1].date())
+    return ok.index[-1]
 
-    sectors = uni.set_index("code")["sector33"]
-    ind = compute(panel, proxy, sectors)
-    ind = {k: v.astype("float32") for k, v in ind.items()}
-    in_uni = pd.Series([c in set(codes) for c in ind["close"].columns], index=ind["close"].columns)
-    mask = ((ind["turnover"] >= cfg["universe"]["min_turnover_jpy"])
-            & (ind["close"] >= cfg["universe"]["min_price"])) & in_uni
-    sigs = detect_all(ind, mask)
-    ds = learner.label(ind, learner.extract(ind, sigs), cfg)
-    return ind, sigs, ds, int(mask.iloc[-1].sum())
+
+def params_path(cfg: dict):
+    return cfg["data"]["db_path"].parent / "strategy_params.json"
+
+
+def dataset(cfg: dict, pl: pd.DataFrame) -> pd.DataFrame:
+    """シグナル表に現在の戦略パラメータを当てはめた学習データ。"""
+    return apply_flags(pl, load_params(params_path(cfg)))
+
+
+def store_of(cfg: dict) -> data.PriceStore:
+    return data.PriceStore(cfg["data"]["price_dir"])
 
 
 def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: bool = True) -> dict | None:
@@ -101,16 +104,23 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     wait_for_close_data(cfg)
     uni = data.refresh_universe(con, cfg)
     names = dict(zip(uni["code"], uni["name"]))
-    data.update_prices(con, uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
+    store = store_of(cfg)
+    proxy = cfg["universe"]["market_proxy"]
+    data.update_prices(store, uni["code"].tolist() + [proxy], cfg)
+    _drop_legacy_prices(con)
 
-    data_date = con.execute("SELECT MAX(date) FROM prices WHERE code=? AND date<=?",
-                            (cfg["universe"]["market_proxy"], _cutoff().strftime("%Y-%m-%d"))).fetchone()[0]
+    cutoff = _usable_date(store, _cutoff())
+    data_date = cutoff.strftime("%Y-%m-%d")
     done = con.execute("SELECT status FROM runs WHERE data_date=?", (data_date,)).fetchone()
     if done and done[0] == "ok" and not force:
         log.info("%s は処理済み（休場日か二重実行）。--force で再実行できます", data_date)
         return None
     log.info("指標とシグナルを計算中…（データ日付 %s）", data_date)
-    ind, sigs, ds, n_scanned = build(con, cfg, uni)
+    ind, pl = pool.refresh(store, cfg, uni, cutoff)
+    ds = dataset(cfg, pl)
+    in_uni = ind["close"].columns.isin(uni["code"])
+    n_scanned = int(((ind["turnover"].iloc[-1] >= cfg["universe"]["min_turnover_jpy"])
+                     & (ind["close"].iloc[-1] >= cfg["universe"]["min_price"]) & in_uni).sum())
     last = ind["close"].index[-1]
     data_date = last.strftime("%Y-%m-%d")
     con.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?)",
@@ -141,8 +151,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     _store_live(con, top, data_date)
     _label_live(con, ds)
 
-    pt = paper.step(con, cfg, ind, top, last) if cfg["paper_trading"]["enabled"] else None
-    rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date)
+    event = regimes.event_of([last])[0]
+    crisis = bool(event) or float(ind["stress"].iloc[-1].iloc[0]) > 0.5
+    regime = dict(crisis=crisis, event=event or ("市場の急変を自動検知" if crisis else ""))
+    pt = paper.step(con, cfg, ind, top, last, crisis=crisis) if cfg["paper_trading"]["enabled"] else None
+    rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
     con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?)", (data_date, json.dumps(rep, ensure_ascii=False, default=float)))
     con.commit()
     md = report.to_markdown(rep)
@@ -155,6 +168,32 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
     print("\n" + md)
     return dict(date=data_date, top=top, n_signals=len(today))
+
+
+def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None, notify_on=True) -> None:
+    """週末用: 研究ループ → （条件が変わったら）再学習 → 過去ペーパートレード → Webページ → 通知。"""
+    from . import backtest, research as rs
+    con = connect(cfg["data"]["db_path"])
+    pl = pool.load(cfg)
+    if pl is None:
+        raise SystemExit("シグナル表がありません。先に daily を実行してください")
+    summary = rs.run(con, cfg, trials=trials, budget_min=budget_min) if research else None
+    ds = dataset(cfg, pl)
+    if summary and summary["changed"]:
+        log.info("戦略の条件が更新されたので再学習します")
+        learner.train(con, cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
+    bt = backtest.run(cfg, ds)
+    site.build(con, cfg)
+    if notify_on:
+        notify.send_research(cfg, summary, bt)
+
+
+def _drop_legacy_prices(con) -> None:
+    """旧バージョン（SQLite に株価を保存していた頃）のテーブルを空にして容量を空ける。"""
+    if con.execute("SELECT 1 FROM prices LIMIT 1").fetchone():
+        con.execute("DELETE FROM prices")
+        con.commit()
+        con.execute("VACUUM")
 
 
 def _store_live(con, top: pd.DataFrame, data_date: str) -> None:

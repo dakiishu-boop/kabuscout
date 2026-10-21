@@ -1,18 +1,21 @@
 """データ取得層。
 
 - 銘柄一覧: JPX「東証上場銘柄一覧」(無料・毎月更新)
-- 株価: Yahoo Finance (yfinance, 無料・日足)。分割調整済みの OHLCV を SQLite にキャッシュし、
+- 株価: Yahoo Finance (yfinance, 無料・日足)。分割調整済みの OHLCV を Parquet にキャッシュし、
   毎日は直近分だけを差分取得する。株式分割を検知したらその銘柄だけ全期間を取り直す。
 """
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 import requests
 import yfinance as yf
 
@@ -64,38 +67,108 @@ def refresh_universe(con, cfg: dict, force: bool = False) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- prices
-def _to_long(raw: pd.DataFrame, codes: list[str]) -> pd.DataFrame:
+class PriceStore:
+    """株価を「日付×銘柄」のワイド行列として項目ごとに Parquet 保存する（25年×全銘柄でも数百MB）。"""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.meta_path = self.root / "meta.json"
+
+    def _path(self, f: str) -> Path:
+        return self.root / f"{f}.parquet"
+
+    def exists(self) -> bool:
+        return self._path("close").exists()
+
+    def meta(self) -> dict:
+        return json.loads(self.meta_path.read_text()) if self.meta_path.exists() else {}
+
+    def save_meta(self, meta: dict) -> None:
+        self.meta_path.write_text(json.dumps(meta))
+
+    def load(self, start: str | None = None, end: str | None = None,
+             codes: list[str] | None = None, fields: list[str] | None = None, clean: bool = True) -> dict:
+        if not self.exists():
+            return {f: pd.DataFrame() for f in (fields or FIELDS)}
+        cols = None
+        if codes is not None:
+            have = set(pq.read_schema(self._path("close")).names)
+            cols = [c for c in codes if c in have]
+        out = {}
+        for f in fields or FIELDS:
+            df = pd.read_parquet(self._path(f), columns=cols)
+            df.index = pd.to_datetime(df.index)
+            if start:
+                df = df[df.index >= pd.Timestamp(start)]
+            if end:
+                df = df[df.index <= pd.Timestamp(end)]
+            out[f] = df
+        return clean_panel(out) if clean and fields is None else out
+
+    def save(self, panel: dict) -> None:
+        for f in FIELDS:
+            df = panel[f].sort_index()
+            df.index.name = "date"
+            df.columns = [str(c) for c in df.columns]
+            df.astype("float32").to_parquet(self._path(f), compression="zstd")
+
+    def upsert(self, new: dict, replace: set[str] = frozenset()) -> None:
+        """new の値で上書き。replace の銘柄は既存データを捨ててから入れ直す。"""
+        if not new or new["close"].empty:
+            return
+        old = self.load(clean=False)
+        merged = {}
+        for f in FIELDS:
+            o = old[f].drop(columns=[c for c in replace if c in old[f].columns]) if not old[f].empty else old[f]
+            merged[f] = new[f].combine_first(o) if not o.empty else new[f]
+        self.save(merged)
+
+    def last_dates(self) -> pd.Series:
+        if not self.exists():
+            return pd.Series(dtype=object)
+        c = self.load(fields=["close"])["close"]
+        return c.apply(lambda s: s.last_valid_index()).dropna().map(lambda d: d.strftime("%Y-%m-%d"))
+
+    def first_dates(self) -> pd.Series:
+        if not self.exists():
+            return pd.Series(dtype=object)
+        c = self.load(fields=["close"])["close"]
+        return c.apply(lambda s: s.first_valid_index()).dropna().map(lambda d: d.strftime("%Y-%m-%d"))
+
+
+def ticker(code: str) -> str:
+    """Yahoo のティッカー。指数（^N225 など）はそのまま、個別株は「コード.T」。"""
+    return code if code.startswith("^") else f"{code}.T"
+
+
+def _wide(raw: pd.DataFrame, codes: list[str]) -> dict:
+    out = {f: [] for f in FIELDS}
     if raw is None or raw.empty:
-        return pd.DataFrame(columns=["code", "date"] + FIELDS)
+        return out
     if not isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = pd.MultiIndex.from_product([[f"{codes[0]}.T"], raw.columns])
-    frames = []
-    for tk in raw.columns.get_level_values(0).unique():
-        sub = raw[tk].rename(columns=str.lower)
-        if "close" not in sub:
+        raw.columns = pd.MultiIndex.from_product([[ticker(codes[0])], raw.columns])
+    raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
+    for f in FIELDS:
+        try:
+            w = raw.xs(f.capitalize(), axis=1, level=1)
+        except KeyError:
             continue
-        sub = sub[FIELDS].dropna(subset=["close"])
-        if sub.empty:
-            continue
-        sub = sub.reset_index().rename(columns={"Date": "date", "index": "date"})
-        sub["code"] = tk.replace(".T", "")
-        frames.append(sub)
-    if not frames:
-        return pd.DataFrame(columns=["code", "date"] + FIELDS)
-    out = pd.concat(frames, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
-    return out[["code", "date"] + FIELDS]
+        w.columns = [str(c).replace(".T", "") for c in w.columns]
+        out[f].append(w.astype("float32"))
+    return out
 
 
-def _download(codes: list[str], batch: int, **kw) -> pd.DataFrame:
-    frames = []
+def _download(codes: list[str], batch: int, **kw) -> dict:
+    parts = {f: [] for f in FIELDS}
     for i in range(0, len(codes), batch):
         chunk = codes[i:i + batch]
         for attempt in range(3):
             try:
-                raw = yf.download([f"{c}.T" for c in chunk], group_by="ticker",
+                raw = yf.download([ticker(c) for c in chunk], group_by="ticker",
                                   auto_adjust=False, progress=False, threads=True, **kw)
-                frames.append(_to_long(raw, chunk))
+                for f, lst in _wide(raw, chunk).items():
+                    parts[f] += lst
                 break
             except Exception as e:
                 log.warning("取得失敗 (%d/%d) 再試行 %d: %s", i, len(codes), attempt + 1, e)
@@ -103,66 +176,76 @@ def _download(codes: list[str], batch: int, **kw) -> pd.DataFrame:
         if (i // batch) % 5 == 0:
             log.info("  株価取得 %d / %d", min(i + batch, len(codes)), len(codes))
         time.sleep(0.5)
-    return pd.concat(frames, ignore_index=True) if frames else _to_long(None, [])
+    out = {}
+    for f in FIELDS:
+        if parts[f]:
+            df = pd.concat(parts[f], axis=1)
+            df = df.loc[:, ~df.columns.duplicated()]
+            out[f] = df
+        else:
+            out[f] = pd.DataFrame()
+    if not out["close"].empty:
+        keep = out["close"].dropna(how="all", axis=1).columns
+        out = {f: v.reindex(columns=keep).dropna(how="all", axis=0) if f == "close" else v.reindex(columns=keep)
+               for f, v in out.items()}
+        idx = out["close"].index
+        out = {f: v.reindex(idx) for f, v in out.items()}
+    return out
 
 
-def _upsert(con, df: pd.DataFrame) -> None:
-    if df.empty:
-        return
-    con.executemany(
-        "INSERT OR REPLACE INTO prices(code,date,open,high,low,close,volume) VALUES (?,?,?,?,?,?,?)",
-        df[["code", "date"] + FIELDS].itertuples(index=False, name=None),
-    )
-    con.commit()
-
-
-def update_prices(con, codes: list[str], cfg: dict) -> None:
-    """差分更新。新規銘柄・分割検知銘柄は全期間取得。"""
+def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
+    """差分更新。新規銘柄・分割検知銘柄・履歴が設定より短い銘柄は全期間取得。"""
     batch = cfg["data"]["batch_size"]
-    years = cfg["data"]["history_years"]
-    last = pd.read_sql("SELECT code, MAX(date) AS last FROM prices GROUP BY code", con)
-    last = dict(zip(last["code"], last["last"]))
+    hstart = cfg["data"]["history_start"]
+    last = store.last_dates().to_dict()
+    meta = store.meta()
 
     cutoff = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
-    fresh = [c for c in codes if c not in last or last[c] < cutoff]
-    incremental = [c for c in codes if c in last and last[c] >= cutoff]
+    today = datetime.now().strftime("%Y-%m-%d")
+    recently_tried = lambda c: meta.get(f"tried:{c}", "") >= (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    # データが1本も無い銘柄（新規上場直後など）は週1回だけ取り直す
+    fresh = [c for c in codes if (c not in last and not recently_tried(c))
+             or (c in last and (last[c] < cutoff or meta.get(c, "9999") > hstart))]
+    incremental = [c for c in codes if c in last and c not in set(fresh)]
 
+    replace: set[str] = set()
     if incremental:
         start = (pd.to_datetime(min(last[c] for c in incremental)) - timedelta(days=10)).strftime("%Y-%m-%d")
         log.info("差分取得: %d 銘柄 (%s〜)", len(incremental), start)
         recent = _download(incremental, batch, start=start)
-        # 分割・併合の検知: 既存データと重なる期間の終値が2%以上ずれたら取り直し
-        old = pd.read_sql("SELECT code, date, close FROM prices WHERE date >= ?", con, params=(start,))
-        merged = recent.merge(old, on=["code", "date"], suffixes=("", "_old"))
-        merged["diff"] = (merged["close"] / merged["close_old"] - 1).abs()
-        split_codes = sorted(set(merged.loc[merged["diff"] > 0.02, "code"]))
-        if split_codes:
-            log.info("分割等を検知、全期間再取得: %s", split_codes[:20])
-            con.executemany("DELETE FROM prices WHERE code=?", [(c,) for c in split_codes])
-            fresh += split_codes
-            recent = recent[~recent["code"].isin(split_codes)]
-        _upsert(con, recent)
+        if not recent["close"].empty:
+            # 分割・併合の検知: 既存データと重なる期間の終値が2%以上ずれたら取り直し
+            old = store.load(start=start, fields=["close"])["close"]
+            common = recent["close"].columns.intersection(old.columns)
+            a = recent["close"][common]
+            b = old[common].reindex(a.index)
+            diff = (a / b - 1).abs().max()
+            split_codes = sorted(diff[diff > 0.02].index)
+            if len(split_codes) > max(20, 0.2 * len(common)):
+                # 大量の銘柄が一斉にずれるのは分割ではなく Yahoo 側の一時的な不具合（日付ずれ等）
+                log.warning("株価データの不整合が多すぎます（%d銘柄）。今回の差分は取り込みません", len(split_codes))
+                return
+            if split_codes:
+                log.info("分割等を検知、全期間再取得: %s", split_codes[:20])
+                fresh += split_codes
+                recent = {f: v.drop(columns=split_codes, errors="ignore") for f, v in recent.items()}
+            store.upsert(recent)
 
     if fresh:
-        log.info("全期間取得: %d 銘柄 (%d年)", len(fresh), years)
-        _upsert(con, _download(fresh, batch, period=f"{years}y"))
+        log.info("全期間取得: %d 銘柄 (%s〜)", len(fresh), hstart)
+        full = _download(fresh, batch, start=hstart)
+        replace = set(full["close"].columns) if not full["close"].empty else set()
+        store.upsert(full, replace=replace)
+        for c in fresh:
+            meta[c] = hstart  # 取得を試みた開始日（上場が新しい銘柄を毎回取り直さないため）
+            meta[f"tried:{c}"] = today
+        store.save_meta(meta)
 
 
-def load_panel(con, start: str | None = None, codes: list[str] | None = None) -> dict[str, pd.DataFrame]:
+def load_panel(store: PriceStore, start: str | None = None, end: str | None = None,
+               codes: list[str] | None = None) -> dict[str, pd.DataFrame]:
     """日付×銘柄のワイド形式 DataFrame の辞書 {open, high, low, close, volume} を返す。"""
-    q = "SELECT * FROM prices"
-    params: tuple = ()
-    if start:
-        q += " WHERE date >= ?"
-        params = (start,)
-    df = pd.read_sql(q, con, params=params)
-    if codes is not None:
-        df = df[df["code"].isin(set(codes))]
-    df["date"] = pd.to_datetime(df["date"])
-    panel = {}
-    for f in FIELDS:
-        panel[f] = df.pivot(index="date", columns="code", values=f).sort_index()
-    return clean_panel(panel)
+    return store.load(start=start, end=end, codes=codes)
 
 
 def clean_panel(panel: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:

@@ -13,7 +13,7 @@ on:
         required: false
         default: ""
 
-concurrency: daily-screening
+concurrency: kabuscout-data
 
 permissions:
   contents: read

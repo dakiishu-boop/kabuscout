@@ -7,15 +7,18 @@ universe:
   # 流動性フィルタ：20日平均売買代金（円）
   min_turnover_jpy: 100000000
   min_price: 100
-  # 地合い判定に使う指数代わりのETF（1306 = TOPIX連動ETF）
-  market_proxy: "1306"
+  # 地合い判定・危機の自動検知に使う指数（Yahoo の TOPIX連動ETF は2009年以降しかなく分割の調整漏れもあるため日経平均）
+  market_proxy: "^N225"
   refresh_days: 7
 
 data:
   db_path: data/kabuscout.db
+  price_dir: data/prices
+  pool_path: data/pool.parquet
   model_dir: data/models
   report_dir: reports
-  history_years: 4
+  # 株価履歴の開始日（約25年分）
+  history_start: "2002-01-01"
   batch_size: 100
 
 labeling:
@@ -33,9 +36,12 @@ screening:
 learning:
   # 何営業日ごとに再学習するか
   retrain_every_days: 5
-  # 学習データの新しさ重み（半減期・日）
-  recency_half_life_days: 365
-  holdout_fraction: 0.2
+  # 学習データの新しさ重み（半減期・日）。25年分あるので5年で半分
+  recency_half_life_days: 1825
+  # 危機局面（リーマン・コロナ等の特例期間）のデータの重み。捨てずに参考程度に扱う
+  crisis_weight: 0.3
+  # 学習に使わず成績確認に回す直近の割合（25年の15% ≒ 直近3〜4年）
+  holdout_fraction: 0.15
   min_train_samples: 2000
 
 paper_trading:
@@ -61,3 +67,26 @@ schedule:
 
 site:
   url: https://dakiishu-boop.github.io/kabuscout/
+
+research:
+  # 1往復あたりの取引コスト（手数料・売買の気配差・滑り）。成績から差し引いて評価する
+  cost: 0.002
+  # 直近この営業日数は「金庫」。研究中は見ず、最後の確認にだけ使う
+  vault_days: 120
+  vault_min_trades: 20
+  # 金庫を開けるたびに上乗せする合格ライン（1回あたり）
+  vault_margin: 0.0005
+  trials_per_strategy: 200
+  budget_min: 60
+  # 年ごとの採点に使う最低取引数・最低年数
+  min_trades_per_year: 20
+  min_years: 8
+  # 「実用水準」とみなす、平常時の年のうちプラスの年の割合（候補は現行より下がらないことも必須）
+  min_positive_years: 0.6
+  # 危機局面での成績が現行よりこれ以上悪化する条件は採用しない
+  crisis_tolerance: 0.005
+  # 有意水準（累計の試行回数で割る = Bonferroni 補正）
+  alpha: 0.05
+
+backtest:
+  start_year: 2008

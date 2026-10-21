@@ -21,7 +21,7 @@ def edge_label(m: dict) -> str:
     return "優位性あり" if lift >= 0.005 else "わずかに優位" if lift > 0 else "まだ優位性なし（ルール中心で順位付け）"
 
 
-def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_date) -> dict:
+def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_date, regime=None) -> dict:
     d = pd.Timestamp(data_date)
     picks = []
     for _, r in top.iterrows():
@@ -38,15 +38,28 @@ def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_da
     if bundle is not None:
         m = bundle["metrics"]
         model = dict(version=bundle["version"], edge=edge_label(m), top_ret=m["daily_top_ret"],
-                     top_win=m["daily_top_win"], base_ret=m["base_ret"], base_win=m["base_win"])
+                     top_win=m["daily_top_win"], base_ret=m["base_ret"], base_win=m["base_win"],
+                     crisis=m.get("crisis"))
     return dict(
         date=data_date, date_label=f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})",
         site_url=cfg.get("site", {}).get("url", ""),
         market=market_stats(ind), n_scanned=n_scanned, n_signals=n_signals, picks=picks, model=model,
         live=dict(n=len(live), win=float(live["label"].mean()), ret=float(live["ret"].mean())) if len(live) >= 5 else None,
         hot=[(STRATEGY_NAMES.get(k, k), w) for k, w in sorted(weights.items(), key=lambda t: -t[1])[:3]],
-        paper=pt,
+        paper=pt, regime=regime or dict(crisis=False, event=""),
     )
+
+
+def crisis_line(rep: dict) -> str:
+    """特例（危機）局面のときの注意書き。"""
+    rg = rep.get("regime") or {}
+    if not rg.get("crisis"):
+        return ""
+    s = f"⚠️ 平常時と違う相場（特例モード）: {rg['event']}。過去の危機局面では値動きの法則が崩れやすく、AIの判断も平常時ほど当てになりません。"
+    c = (rep.get("model") or {}).get("crisis") or {}
+    if c.get("daily_top_ret") is not None:
+        s += f" 過去の危機局面での上位推奨の期待値は {c['daily_top_ret']:+.2%}。"
+    return s + " ペーパートレードの新規買いは1銘柄に絞っています。"
 
 
 def _pct(a, b):
@@ -62,8 +75,10 @@ def _earn(p, limit=14):
 def to_markdown(rep: dict) -> str:
     m = rep["market"]
     L = [f"# KabuScout {rep['date_label']} 引け後スクリーニング", "",
-         f"地合い **{m['mood']}**（TOPIX 75日線乖離 {m['mkt_dev75']:+.1%} / 20日 {m['mkt_ret20']:+.1%} / "
+         f"地合い **{m['mood']}**（日経平均 75日線乖離 {m['mkt_dev75']:+.1%} / 20日 {m['mkt_ret20']:+.1%} / "
          f"25日線より上の銘柄 {m['breadth25']:.0%}）", f"{rep['n_scanned']:,}銘柄を走査 → シグナル{rep['n_signals']}件", ""]
+    if crisis_line(rep):
+        L[2:2] = [crisis_line(rep)]
     for p in rep["picks"]:
         prob = f" AI {p['prob']:.0%}" if p["prob"] is not None else ""
         L.append(f"{p['rank']}. **{p['code']} {p['name']}**【{'・'.join(p['strategies'])}】{prob} {_earn(p)}")
@@ -86,12 +101,13 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
     m, url = rep["market"], rep["site_url"] or None
     head = dict(
         title=f"📈 KabuScout {rep['date_label']} 引け後スクリーニング",
-        url=url, color=MOOD_COLOR[m["mood"]],
-        description=f"**{rep['n_scanned']:,}** 銘柄を走査 → シグナル **{rep['n_signals']}** 件"
+        url=url, color=0x8B0000 if crisis_line(rep) else MOOD_COLOR[m["mood"]],
+        description=(f"**{crisis_line(rep)}**\n\n" if crisis_line(rep) else "")
+                    + f"**{rep['n_scanned']:,}** 銘柄を走査 → シグナル **{rep['n_signals']}** 件"
                     + (f"\n🌐 [Webで詳しく見る（チャート・過去の結果）]({url})" if url else ""),
         fields=[
             dict(name="地合い", value=f"**{m['mood']}**", inline=True),
-            dict(name="TOPIX 75日線", value=f"{m['mkt_dev75']:+.1%}", inline=True),
+            dict(name="日経平均 75日線", value=f"{m['mkt_dev75']:+.1%}", inline=True),
             dict(name="25日線より上", value=f"{m['breadth25']:.0%}", inline=True),
         ],
     )
@@ -127,7 +143,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
     lines = []
     if rep["model"]:
         mo = rep["model"]
-        lines.append(f"**{mo['edge']}**（未知期間で上位推奨の期待値 {mo['top_ret']:+.2%} / 全体平均 {mo['base_ret']:+.2%}）")
+        lines.append(f"**{mo['edge']}**（未知期間で上位推奨の期待値 {mo['top_ret']:+.2%} / 全体平均 {mo['base_ret']:+.2%}・コスト控除前）")
     if rep["live"]:
         lv = rep["live"]
         lines.append(f"通知した上位5件の答え合わせ: {lv['n']}件 勝率 {lv['win']:.0%} / 平均 {lv['ret']:+.2%}")
@@ -142,7 +158,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
 # ---------------------------------------------------------------- ntfy（短く）
 def ntfy_text(rep: dict, n: int = 5) -> str:
     m = rep["market"]
-    L = [f"地合い {m['mood']} / シグナル{rep['n_signals']}件"]
+    L = [f"地合い {m['mood']} / シグナル{rep['n_signals']}件"] + ([crisis_line(rep)] if crisis_line(rep) else [])
     for p in rep["picks"][:n]:
         prob = f" AI{p['prob']:.0%}" if p["prob"] is not None else ""
         L.append(f"{p['rank']}. {p['code']} {p['name']}｜{p['strategies'][0]}{prob}")
@@ -150,3 +166,39 @@ def ntfy_text(rep: dict, n: int = 5) -> str:
     if rep["paper"]:
         L.append(f"💼 評価額 {rep['paper']['equity']:,.0f}円")
     return "\n".join(L)
+
+
+# ---------------------------------------------------------------- 週末の研究レポート
+def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
+    embeds = []
+    if summary:
+        adopted = [r for r in summary["results"] if r["adopted"]]
+        lines = [f"探索期間 {summary['search_from']}〜{summary['search_to']} ／ 金庫 {summary['vault_from']}〜（研究中は未使用）",
+                 f"取引コスト {summary['cost']:.1%}/往復 を差し引いて評価", ""]
+        for r in summary["results"]:
+            mark = "✅" if r["adopted"] else "・"
+            lines.append(f"{mark} **{r['name']}**（{r['trials']}通り／累計{r['cum_trials']}）: {r['reason']}")
+        embeds.append(dict(
+            title="🔬 研究ループ: " + (f"{len(adopted)}つの戦略の条件を更新" if adopted else "条件の更新なし（現行が最善 or 改善が偶然の範囲）"),
+            url=url or None, color=0x2CA02C if adopted else 0x808080, description="\n".join(lines)[:4000]))
+    s = bt["stats"]
+    embeds.append(dict(
+        title=f"📜 過去でのペーパートレード（{bt['start'][:4]}〜{bt['end'][:4]}・ウォークフォワード）",
+        url=(url + "#paper") if url else None, color=0x9467BD,
+        description="毎年「その年より前のデータだけ」で学習したAIで、その年を売買した結果",
+        fields=[
+            dict(name="AI選定", value=f"年率 **{s['ai']['cagr']:+.1%}**\n最大下落 {s['ai']['max_dd']:.0%}", inline=True),
+            dict(name="ランダム選定", value=f"年率 {s['random']['cagr']:+.1%}\n最大下落 {s['random']['max_dd']:.0%}", inline=True),
+            dict(name="日経平均を保有", value=f"年率 {s['index']['cagr']:+.1%}\n最大下落 {s['index']['max_dd']:.0%}", inline=True),
+        ],
+        footer=dict(text="戦略条件は過去で調整済み・現存銘柄のみ（生存者バイアス）のため実際より良く見えやすい点に注意")))
+    return {"username": "KabuScout", "embeds": embeds}
+
+
+def research_text(summary: dict | None, bt: dict) -> str:
+    s = bt["stats"]
+    head = ""
+    if summary:
+        n = sum(r["adopted"] for r in summary["results"])
+        head = f"研究ループ: {n}戦略を更新\n" if n else "研究ループ: 更新なし\n"
+    return head + f"過去ペーパートレード 年率 AI {s['ai']['cagr']:+.1%} / ランダム {s['random']['cagr']:+.1%} / 日経平均 {s['index']['cagr']:+.1%}"

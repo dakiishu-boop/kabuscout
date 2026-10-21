@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from . import regimes
 from .config import ROOT
 from .strategies import STRATEGIES
 
@@ -23,19 +24,25 @@ def _records(df: pd.DataFrame) -> list[dict]:
     return out
 
 
-def _prices(con, codes: list[str], n: int = 130) -> dict:
+def _prices(cfg: dict, codes: list[str], n: int = 130) -> dict:
+    from .data import PriceStore
+    if not codes:
+        return {}
+    start = (pd.Timestamp.today() - pd.Timedelta(days=int((n + 80) * 1.6))).strftime("%Y-%m-%d")
+    p = PriceStore(cfg["data"]["price_dir"]).load(start=start, codes=codes)
     out = {}
     for c in codes:
-        df = pd.read_sql("SELECT date, open, high, low, close, volume FROM prices WHERE code=? ORDER BY date DESC LIMIT ?",
-                         con, params=(c, n + 75)).iloc[::-1]
+        if c not in p["close"].columns:
+            continue
+        df = pd.DataFrame({f: p[f][c] for f in ("open", "high", "low", "close")}).dropna()
         if df.empty:
             continue
-        cl = df["close"]
-        df["ma25"] = cl.rolling(25).mean().round(1)
-        df["ma75"] = cl.rolling(75).mean().round(1)
-        df = df.tail(n)
-        out[c] = {k: df[k].round(1).tolist() if k != "date" else df[k].tolist()
-                  for k in ("date", "open", "high", "low", "close", "ma25", "ma75")}
+        df["ma25"] = df["close"].rolling(25).mean()
+        df["ma75"] = df["close"].rolling(75).mean()
+        df = df.tail(n).astype(float).round(1)
+        rec = {k: [None if v != v else v for v in df[k].tolist()] for k in df.columns}
+        rec["date"] = [d.strftime("%Y-%m-%d") for d in df.index]
+        out[c] = rec
     return out
 
 
@@ -53,23 +60,23 @@ def collect(con, cfg: dict) -> dict:
     latest = summaries[0]["date"] if summaries else None
     codes = set(signals.loc[signals["date"] == latest, "code"]) if latest else set()
     codes |= set(positions.loc[positions["status"].isin(["open", "pending"]), "code"])
-    prices = _prices(con, sorted(codes))
+    prices = _prices(cfg, sorted(codes))
 
     # 保有中の現在値
-    last_close = {}
-    for c in positions.loc[positions["status"] == "open", "code"]:
-        r = con.execute("SELECT close, date FROM prices WHERE code=? ORDER BY date DESC LIMIT 1", (c,)).fetchone()
-        if r:
-            last_close[c] = r[0]
+    last_close = {c: prices[c]["close"][-1] for c in positions.loc[positions["status"] == "open", "code"] if c in prices}
 
+    base = cfg["data"]["db_path"].parent
+    load_json = lambda name: json.loads((base / name).read_text()) if (base / name).exists() else None
     return dict(
+        backtest=load_json("backtest.json"), research=load_json("research.json"), events=regimes.events_table(),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
         summaries=summaries, signals=_records(signals), positions=_records(positions),
         models=_records(models), stats=_records(stats), prices=prices, last_close=last_close,
         strategies={s.key: dict(name=s.name, desc=s.desc) for s in STRATEGIES},
         config=dict(capital=cfg["paper_trading"]["capital_jpy"], horizon=cfg["labeling"]["horizon_days"],
                     tp_atr=cfg["labeling"]["tp_atr"], sl_atr=cfg["labeling"]["sl_atr"],
-                    max_positions=cfg["paper_trading"]["max_positions"]),
+                    max_positions=cfg["paper_trading"]["max_positions"],
+                    crisis_weight=cfg["learning"].get("crisis_weight", 0.3)),
     )
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .regimes import market_stress
+
 # 機械学習モデルに渡す特徴量（戦略フラグ s_* は strategies.py で追加）
 FEATURES = [
     "dev5", "dev25", "dev75", "dev200", "slope25", "slope75", "slope200",
@@ -14,6 +16,14 @@ FEATURES = [
     "body", "lower_shadow", "upper_shadow", "close_pos", "gap",
     "rs20", "rs60", "sector_mom20", "rs_sector20",
     "mkt_dev75", "mkt_ret5", "mkt_ret20", "mkt_vol20", "breadth25",
+]
+
+
+# 戦略の判定と売買シミュレーションに必要な生の値（シグナル表に一緒に保存する）
+RAW_FIELDS = [
+    "open", "high", "low", "close", "sma5", "sma25", "sma75", "sma200", "high20", "high60",
+    "prior_high52", "bb_lower", "atr", "turnover", "box_hi60", "box_lo60", "rsi14_min3",
+    "prev_high", "sma5_prev", "sma25_prev", "stress",
 ]
 
 
@@ -94,6 +104,13 @@ def compute(panel: dict[str, pd.DataFrame], market_code: str,
     ind["pullback20"] = c / ind["high20"] - 1
     ind["rebound5"] = c / l.rolling(5).min() - 1
     ind["down_streak"] = _streak(c < prev)
+    # 戦略判定用（シフト・ローリングを事前計算しておくと、行単位の表でも同じ判定式が使える）
+    ind["box_hi60"] = c.shift(1).rolling(60).max()
+    ind["box_lo60"] = c.shift(1).rolling(60).min()
+    ind["rsi14_min3"] = ind["rsi14"].rolling(3).min()
+    ind["prev_high"] = h.shift(1)
+    ind["sma5_prev"] = sma[5].shift(1)
+    ind["sma25_prev"] = sma[25].shift(1)
 
     rng = (h - l).replace(0, np.nan)
     ind["body"] = (c - o) / atr
@@ -114,6 +131,7 @@ def compute(panel: dict[str, pd.DataFrame], market_code: str,
     ind["mkt_ret5"] = _bcast(m / m.shift(5) - 1, c)
     ind["mkt_ret20"] = _bcast(m / m.shift(20) - 1, c)
     ind["mkt_vol20"] = _bcast(m_ret.rolling(20).std() * np.sqrt(250), c)
+    ind["stress"] = _bcast(market_stress(m).astype(float), c)
     above = (c > sma[25]).where(sma[25].notna())
     ind["breadth25"] = _bcast(above.mean(axis=1), c)
 

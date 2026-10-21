@@ -10,6 +10,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from kabuscout.config import load_config
+from kabuscout.data import PriceStore
 from kabuscout.db import connect
 from kabuscout.strategies import STRATEGIES, STRATEGY_NAMES
 
@@ -25,11 +26,12 @@ def strat_label(s: str) -> str:
 
 
 def chart(code: str, name: str, marks: pd.DataFrame | None = None):
-    df = q("SELECT * FROM prices WHERE code=? ORDER BY date DESC LIMIT 260", (code,)).iloc[::-1]
-    if df.empty:
+    p = PriceStore(cfg["data"]["price_dir"]).load(start=(pd.Timestamp.today() - pd.Timedelta(days=400)).strftime("%Y-%m-%d"), codes=[code])
+    if code not in p["close"].columns:
         st.info("株価データがありません")
         return
-    df["date"] = pd.to_datetime(df["date"])
+    df = pd.DataFrame({f: p[f][code] for f in ("open", "high", "low", "close", "volume")}).dropna().tail(260)
+    df = df.rename_axis("date").reset_index()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.03)
     fig.add_trace(go.Candlestick(x=df["date"], open=df["open"], high=df["high"], low=df["low"], close=df["close"],
                                  name=code, increasing_line_color="#d62728", decreasing_line_color="#1f77b4"), 1, 1)

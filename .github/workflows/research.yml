@@ -1,0 +1,62 @@
+# 週末の研究ループ: 過去25年のデータで戦略の条件を調整（金庫・多重検定補正つき）→ 再学習
+# → 過去でのペーパートレード（ウォークフォワード）→ Webページ更新 → Discord に研究レポート
+name: weekly-research
+
+on:
+  schedule:
+    - cron: "0 0 * * 6"   # 毎週土曜 9:00 JST
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "追加オプション（例: --trials 400 --budget-min 120）"
+        required: false
+        default: ""
+
+concurrency: kabuscout-data
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: kabuscout-data-${{ github.run_id }}
+          restore-keys: kabuscout-data-
+      - name: Research
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PYTHONWARNINGS: ignore
+          ARGS: ${{ github.event.inputs.args }}
+        run: python -m kabuscout research $ARGS
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: kabuscout-data-${{ github.run_id }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: research
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

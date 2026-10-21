@@ -40,31 +40,7 @@ CANDIDATES = [
 ]
 
 
-# ---------------------------------------------------------------- dataset
-def extract(ind: dict, sigs: dict[str, pd.DataFrame], only_last: bool = False) -> pd.DataFrame:
-    """シグナルが出た (日付, 銘柄) の特徴量を縦持ちで取り出す。"""
-    any_sig = None
-    for m in sigs.values():
-        any_sig = m if any_sig is None else (any_sig | m)
-    arr = any_sig.to_numpy()
-    if only_last:
-        arr = arr.copy()
-        arr[:-1] = False
-    ti, ci = np.nonzero(arr)
-    dates, codes = any_sig.index, any_sig.columns
-    out = {"date": dates[ti], "code": codes[ci], "_ti": ti, "_ci": ci}
-    for f in FEATURES + ["close", "atr", "turnover"]:
-        out[f] = ind[f].to_numpy()[ti, ci]
-    for s in STRATEGIES:
-        out[f"s_{s.key}"] = sigs[s.key].to_numpy()[ti, ci].astype(int)
-    df = pd.DataFrame(out)
-    df["n_strat"] = df[FLAG_COLS].sum(axis=1)
-    flags = df[FLAG_COLS].to_numpy().astype(bool)
-    keys = np.array([s.key for s in STRATEGIES])
-    df["strategies"] = [",".join(keys[row]) for row in flags]
-    return df
-
-
+# ---------------------------------------------------------------- labels
 def label(ind: dict, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """トリプルバリア法でラベル付け。complete=False は結果確定前。"""
     H = cfg["labeling"]["horizon_days"]
@@ -138,9 +114,13 @@ def rule_score(df: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
 
 
 # ---------------------------------------------------------------- training
-def _weights(dates: pd.Series, half_life: float) -> np.ndarray:
-    age = (dates.max() - dates).dt.days.to_numpy()
-    return 0.5 ** (age / half_life)
+def _weights(df: pd.DataFrame, lc: dict) -> np.ndarray:
+    """新しいデータほど重く、危機局面（特例）は軽く。危機のデータも捨てずに参考程度に学ぶ。"""
+    age = (df["date"].max() - df["date"]).dt.days.to_numpy()
+    w = 0.5 ** (age / lc["recency_half_life_days"])
+    if "crisis" in df:
+        w = np.where(df["crisis"].to_numpy() == 1, w * lc.get("crisis_weight", 0.3), w)
+    return w
 
 
 def _evaluate(df: pd.DataFrame, prob: np.ndarray, top_k: int = 5) -> dict:
@@ -150,12 +130,19 @@ def _evaluate(df: pd.DataFrame, prob: np.ndarray, top_k: int = 5) -> dict:
     q = d["prob"].quantile(0.9)
     top = d[d["prob"] >= q]
     daily = d.sort_values("prob", ascending=False).groupby("date").head(top_k)
-    return dict(
+    out = dict(
         n=int(len(d)), auc=float(auc),
         base_win=float(d["label"].mean()), base_ret=float(d["ret"].mean()),
         top10_win=float(top["label"].mean()), top10_ret=float(top["ret"].mean()),
         daily_top_win=float(daily["label"].mean()), daily_top_ret=float(daily["ret"].mean()),
     )
+    if "crisis" in d:  # 平常時と危機局面（特例）を分けた成績
+        for name, flag in (("normal", 0), ("crisis", 1)):
+            dd, dl = d[d["crisis"] == flag], daily[daily["crisis"] == flag]
+            out[name] = dict(n=int(len(dd)), base_ret=float(dd["ret"].mean()) if len(dd) else None,
+                             daily_top_ret=float(dl["ret"].mean()) if len(dl) else None,
+                             daily_top_win=float(dl["label"].mean()) if len(dl) else None)
+    return out
 
 
 def _merit(m: dict) -> float:
@@ -182,7 +169,7 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     purge_end = dates[max(0, np.searchsorted(dates, split) - H)]  # ラベル期間の重複を除去
     tr, ho = d[d["date"] < purge_end], d[d["date"] >= split]
     X_tr, y_tr = tr[MODEL_FEATURES], tr["label"]
-    w_tr = _weights(tr["date"], lc["recency_half_life_days"])
+    w_tr = _weights(tr, lc)
 
     results = []
     for p in CANDIDATES:
@@ -214,7 +201,7 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
             verdict = "比較期間不足のため最新データで更新"
 
     # 全データで再学習して本番モデルに
-    final = _fit(best_p, d[MODEL_FEATURES], d["label"], _weights(d["date"], lc["recency_half_life_days"]))
+    final = _fit(best_p, d[MODEL_FEATURES], d["label"], _weights(d, lc))
     sample = ho.sample(min(4000, len(ho)), random_state=0)
     pi = permutation_importance(best_m, sample[MODEL_FEATURES], sample["label"],
                                 n_repeats=3, random_state=0, scoring="roc_auc")

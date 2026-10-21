@@ -44,6 +44,13 @@ def send(cfg: dict, rep: dict) -> list[str]:
                  ntfy_body=report.ntfy_text(rep), click=rep["site_url"])
 
 
+def send_research(cfg: dict, summary: dict | None, bt: dict) -> list[str]:
+    title = "🔬 KabuScout 週末の研究レポート"
+    payload = report.research_payload(summary, bt, cfg.get("site", {}).get("url", ""))
+    return _send(cfg, title, "研究ループが完了しました", discord_payload=payload,
+                 ntfy_body=report.research_text(summary, bt))
+
+
 def send_text(cfg: dict, title: str, text: str) -> list[str]:
     return _send(cfg, title, text, discord_payload={"username": "KabuScout", "content": f"**{title}**\n{text}"},
                  ntfy_body=text)

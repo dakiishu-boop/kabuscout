@@ -196,8 +196,8 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
                 log.warning("%sの更新に失敗: %s", name, e)
         pool.refresh(store_of(cfg), cfg, uni, _usable_date(store_of(cfg), _cutoff()))
     pl = pool.load(cfg)
-    if pl is None:
-        raise SystemExit("シグナル表がありません。先に daily を実行してください")
+    if pl is None:  # 定義が変わった（新しいデータ列など）ときは作り直す
+        pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
     summary = rs.run(con, cfg, trials=trials, budget_min=budget_min) if research else None
     if summary:
         # 研究で採用された条件・売買ルールをこの後の再学習と過去ペーパートレードに反映するため、設定を読み直す

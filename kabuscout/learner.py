@@ -168,11 +168,23 @@ def _merit(m: dict) -> float:
     return (m["daily_top_ret"] - m["base_ret"]) + 0.02 * (m["auc"] - 0.5)
 
 
+def _usable(s: pd.Series) -> bool:
+    """学習に使える列か。scikit-learn は20万行を超えると一部を抜き出して区切り値を決めるので、
+    まばらな列は抜き出した中で値が1種類以下になりエラーになる。十分な件数と、2番目に多い値の件数も確かめる。"""
+    n = int(s.notna().sum())
+    if n < 2000:
+        return False
+    vc = s.value_counts()
+    if len(vc) < 2:
+        return False
+    return len(vc) > 20 or int(vc.iloc[1]) >= 200
+
+
 def _fit(params: dict, X, y, w):
     """学習期間に値が無い（または1種類しかない）特徴量は外して学習する。
     例: 2008年までのデータには適時開示がまだ無い。新しい scikit-learn はこうした列でエラーになる。
     列の選択ごと1つのモデルにまとめるので、予測時は全特徴量をそのまま渡せばよい。"""
-    cols = [c for c in X.columns if X[c].nunique(dropna=True) >= 2]
+    cols = [c for c in X.columns if _usable(X[c])]
     m = Pipeline([("cols", ColumnTransformer([("keep", "passthrough", cols)], remainder="drop")),
                   ("hgb", HistGradientBoostingClassifier(random_state=42, **params))])
     m.fit(X, y, hgb__sample_weight=w)

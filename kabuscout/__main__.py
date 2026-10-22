@@ -81,7 +81,7 @@ def main(argv=None):
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
-    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
+    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
         from . import site
         site.build(connect(cfg["data"]["db_path"]), cfg)
 

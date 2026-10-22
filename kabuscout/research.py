@@ -586,10 +586,14 @@ def model_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex) -> dic
 
 def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_row: dict) -> dict:
     """候補の特徴量のグループをAIに足すかを、同じ安全装置で判定する。inc_row は現行（model_search の勝者）の結果。"""
+    from .edinet import FIN_FEATURES
     from .indicators import CANDIDATE_FEATURES
-    groups = {"値動き・出来高の追加特徴量": CANDIDATE_FEATURES}
+    groups = {"値動き・出来高の追加特徴量": CANDIDATE_FEATURES, "財務（EDINET: PBR・PER・ROEなど）": FIN_FEATURES}
     have = set(cfg["learning"].get("extra_features") or [])
     groups = {k: v for k, v in groups.items() if not set(v) <= have}
+    # データがまだ揃っていない候補は試さない（試行回数だけ増えて合格ラインが上がるため）。直近8年のシグナルの3割以上に値があること
+    recent = ds[ds["date"] >= ds["date"].max() - pd.Timedelta(days=365 * 8)]
+    groups = {k: v for k, v in groups.items() if all(f in recent and recent[f].notna().mean() >= 0.3 for f in v)}
     if not groups:
         return dict(adopted=False, reason="候補なし（すべて採用済み）", trials=0, cum_trials=0, _preds=inc_row["preds"])
     base = learner.model_features(cfg)

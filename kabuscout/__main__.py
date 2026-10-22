@@ -28,7 +28,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -70,6 +70,10 @@ def main(argv=None):
         if a.probe or not (cfg["data"]["db_path"].parent / "jquants" / "probe.json").exists():
             jquants.probe(cfg)
         print(jquants.update_fins(cfg, max_minutes=a.budget_min or 20))
+    elif a.command == "evaluate-edinet":  # EDINET の財務データが効くかの確認（診断＋過去ペーパートレード）
+        from . import evaluate
+        from .edinet import FIN_FEATURES
+        evaluate.run(cfg, "edinet", FIN_FEATURES, start_year=2012)
     elif a.command == "evaluate-jquants":
         from . import evaluate, jquants
         evaluate.run(cfg, "jquants", jquants.JQ_FEATURES, start_year=2024)
@@ -81,7 +85,7 @@ def main(argv=None):
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
-    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
+    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train", "evaluate-edinet"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
         from . import site
         site.build(connect(cfg["data"]["db_path"]), cfg)
 

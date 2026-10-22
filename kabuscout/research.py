@@ -199,7 +199,9 @@ def run(con, cfg: dict, trials: int | None = None, budget_min: float | None = No
             adopted["売買ルール（共通）"] = plan_res["candidate"]
         adopted.update({f"売買ルール:{k}": v for k, v in per_adopted.items()})
         hist.append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted=adopted))
-        out = dict(params=params, history=hist)
+        # 他の研究で採用済みの設定（AIのモデル設定・特徴量・買い控え・同時保有数など）は残す
+        # （以前は作り直していたため、売買ルールが採用されるとそれらが消えていた＝ラウンド9で発見）
+        out = {**saved, "params": params, "history": hist}
         plan = plan_res["candidate"] if plan_changed else saved.get("plan")
         if plan:
             out["plan"] = plan
@@ -499,16 +501,25 @@ def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex)
 
 
 def _wf_row(cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, params: dict | None = None, features: list[str] | None = None) -> dict:
-    """ウォークフォワードで過去ペーパートレードをして、金庫より前の年ごとの成績と金庫期間の成績を返す。"""
+    """ウォークフォワードで過去ペーパートレードをして、金庫より前の年ごとの成績と金庫期間の成績を返す。
+    乱数の種だけでも年ごとの成績が大きくぶれる（ラウンド9）ので、research.compare_seeds 個の種の平均で比べる。
+    返す予測（preds）は最初の種のもの（続く過去ペーパートレードに使う）。"""
     from . import backtest
     vault_start = cal[-cfg["research"]["vault_days"]]
-    pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=params, features=features)
-    pr = backtest.with_sectors(backtest.with_stops(pr[pr["complete"]], cfg), cfg)
-    eq = backtest.simulate(pr, cal[cal >= pr["date"].min()], cfg, "ai")["equity"]
-    s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
-    yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
-                    for y, g in s_.groupby(s_.index.year)})
-    return dict(preds=pr, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1))
+    base = params or learner.model_params(cfg)
+    runs = []
+    for k in range(int(cfg["research"].get("compare_seeds", 1))):
+        p = dict(base, random_state=42 + k)
+        pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=p, features=features)
+        pr = backtest.with_sectors(backtest.with_stops(pr[pr["complete"]], cfg), cfg)
+        eq = backtest.simulate(pr, cal[cal >= pr["date"].min()], cfg, "ai")["equity"]
+        s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
+        yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
+                        for y, g in s_.groupby(s_.index.year)})
+        runs.append(dict(preds=pr, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1)))
+    stats = {k: float(np.mean([r["stats"][k] for r in runs])) for k in ("cagr", "max_dd", "total", "worst_year")}
+    return dict(preds=runs[0]["preds"], yearly=pd.concat([r["yearly"] for r in runs], axis=1).mean(axis=1),
+                stats=stats, vault=float(np.mean([r["vault"] for r in runs])), seeds=len(runs))
 
 
 def _judge(con, cfg: dict, key: str, label: str, inc_row: dict, rows: list[dict], name) -> dict:

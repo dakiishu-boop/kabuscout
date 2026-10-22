@@ -261,6 +261,28 @@ def _stats(eq: pd.Series, trades: pd.DataFrame | None = None) -> dict:
     return out
 
 
+def outlook(eq: pd.Series, n: int = 4000, seed: int = 0) -> dict:
+    """実運用の見込みの幅: 週ごとの損益を13週（四半期）のまとまりで並べ替えて、1年後・3年後の分布を作る。
+    過去の検証は実際より良く見えやすいので、年率を半分と仮定した「控えめ」も出す。"""
+    w = eq.resample("W-FRI").last().dropna().pct_change().dropna().to_numpy()
+    if len(w) < 60:
+        return {}
+    rng = np.random.default_rng(seed)
+    years = (eq.index[-1] - eq.index[0]).days / 365.25
+    cagr = (eq.iloc[-1] / eq.iloc[0]) ** (1 / max(years, 1e-9)) - 1
+    out = {}
+    for label, r in (("tested", w), ("conservative", w - max(cagr, 0) / 2 / 52)):
+        for yrs in (1, 3):
+            res, dds = np.empty(n), np.empty(n)
+            for k in range(n):
+                idx = np.concatenate([np.arange(st, st + 13) for st in rng.integers(0, len(r) - 13, size=4 * yrs + 1)])[:52 * yrs]
+                x = np.cumprod(1 + r[idx])
+                res[k], dds[k] = x[-1] - 1, (x / np.maximum.accumulate(x) - 1).min()
+            out[f"{label}_{yrs}y"] = dict(median=float(np.median(res)), p10=float(np.quantile(res, 0.1)),
+                                         p90=float(np.quantile(res, 0.9)), loss=float((res < 0).mean()), dd20=float((dds <= -0.2).mean()))
+    return out
+
+
 def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
     bc = cfg["backtest"]
     if preds is None:
@@ -306,6 +328,7 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
         crisis_periods=[dict(name=e.name, start=e.start, end=e.end) for e in regimes.EVENTS if e.kind == "crisis"],
     )
     res["gate"] = cfg["paper_trading"].get("gate")
+    res["outlook"] = outlook(eq)
     from .health import expectation
     res["expect"] = expectation(ai["trades"])  # 実際のペーパートレードが想定どおりかの判定に使う（health.py）
     (cfg["data"]["db_path"].parent / "backtest.json").write_text(json.dumps(res, ensure_ascii=False))

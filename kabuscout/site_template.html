@@ -400,6 +400,10 @@ function renderBacktest(el) {
   <div class="kpis">${card("ai", "AIが選んだ場合", (S.ai.trades ? `<br>${S.ai.trades.toLocaleString()}回・勝率${pct0(S.ai.win)}` : "") + (S.ai.after_tax != null ? `<br>税引後の年率 ${pct(S.ai.after_tax)}・最悪の年 ${pct0(S.ai.worst_year)}` : ""))}
     ${card("random", "同じシグナルからランダム")}${card("index", "日経平均を持ち続けた場合")}
     <div class="card kpi"><div class="k">AIの上乗せ（対ランダム）</div><div class="v ${cls(S.ai.cagr - S.random.cagr)}">${pct(S.ai.cagr - S.random.cagr)}</div><div class="s">年率の差</div></div></div>
+  ${B.outlook && B.outlook.tested_1y ? `<h2>実運用の見込みの幅</h2><div class="card tbl"><table><thead><tr><th></th><th class="num">中央値</th><th class="num">悪い方10%</th><th class="num">良い方10%</th><th class="num">元本割れ</th><th class="num hide-sm">−20%以上の下落</th></tr></thead><tbody>` +
+    [["tested_1y", "1年後（過去の検証どおりなら）"], ["conservative_1y", "1年後（控えめ: 年率を半分と仮定）"], ["tested_3y", "3年後（過去の検証どおりなら）"], ["conservative_3y", "3年後（控えめ）"]]
+      .map(([k, n]) => { const o = B.outlook[k]; return `<tr><td class="small" style="white-space:normal">${n}</td><td class="num ${cls(o.median)}">${pct0(o.median)}</td><td class="num ${cls(o.p10)}">${pct0(o.p10)}</td><td class="num ${cls(o.p90)}">${pct0(o.p90)}</td><td class="num">${pct0(o.loss)}</td><td class="num hide-sm">${pct0(o.dd20)}</td></tr>`; }).join("") +
+    `</tbody></table></div><p class="small muted">過去の週ごとの損益を、四半期のまとまりで並べ替えて何千通りも試した分布。過去の検証は実際より良く見えやすいので、控えめな方を目安に。1年だけで判断せず、数年単位で見てください。</p>` : ""}
   <h2>資産の推移（対数目盛・赤い帯は危機局面）</h2><div class="card pad">
     <div class="lg"><span><i style="background:${col.ai}"></i>AI選定</span><span><i style="background:${col.random}"></i>ランダム選定</span><span><i style="background:${col.index}"></i>日経平均</span><span><i style="background:var(--up);opacity:.25;height:8px"></i>危機局面</span></div>
     ${logChart([{points: B.curve.index, color: col.index}, {points: B.curve.random, color: col.random}, {points: B.curve.ai, color: col.ai, w: 2.2}], B.crisis_periods)}</div>

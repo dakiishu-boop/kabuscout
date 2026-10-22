@@ -361,7 +361,7 @@ function renderLive(el) {
     closed.slice().reverse().map(p => `<tr><td>${dLabel(p.exit_date)}</td><td>${esc(p.code)} ${esc(p.name)}</td><td class="num">${yen(p.entry)}</td><td class="num">${yen(p.exit)}</td>
       <td class="num ${cls(p.pnl)}">${sgnYen(p.pnl)}</td><td>${esc(p.reason)}</td><td class="num">${p.days_held}</td></tr>`).join("") + `</tbody></table></div>`;
   h += `<p class="small muted">ルール: 資金${yen(cap)}円・現物のみ。毎日AI順位の高い順に最大${DATA.config.picks_per_day}銘柄（危機局面では1銘柄）を、翌営業日の寄付きで100株単位・1銘柄あたり評価額の1/${DATA.config.max_positions}まで買う。
-    ただし損切になったときの損失が資金の${pct0(DATA.config.risk_per_trade)}を超えないように株数を減らす。買えない値段の銘柄は飛ばす。損益は売買コストを引いた値（過去ペーパートレードと同じルール）。</p>`;
+    ただし損切になったときの損失が資金の${pct0(DATA.config.risk_per_trade)}を超えないように株数を減らす。買えない値段の銘柄は飛ばす。損益は売買コストを引いた値（過去ペーパートレードと同じルール）。<br>実際に注文する場合は、前日の夜に<b>「寄付の成行」</b>で（指値にすると、伸びる銘柄ほど買えずに過去の検証では年率が約4割下がった）。</p>`;
   el.innerHTML = h;
 }
 

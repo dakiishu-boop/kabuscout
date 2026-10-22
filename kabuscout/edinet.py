@@ -6,6 +6,10 @@
 
 取得は1件ずつ間隔を空けて行い、毎週の研究ジョブの時間で少しずつ貯める（初回は数週間かけて揃う）。
 先読みを防ぐため、各期の数字は「決算期末の95日後」から使えるものとして扱う（有報の提出は通常3ヶ月以内）。
+
+EDINET は海外のサーバーからのアクセスを入口で拒否する（GitHub Actions からは HTTP 403 の HTMLページが返る）。
+そのため取得は日本の PC（.env に EDINET_API_KEY）で行い、取り出した主要な経営指標だけを edinet_data/metrics.parquet
+としてリポジトリに置く（公共データ利用規約に基づく二次利用。出典: EDINET（金融庁））。クラウドはそれを読み込む。
 """
 from __future__ import annotations
 
@@ -41,6 +45,11 @@ METRICS = {
                      r"RatioOfEquityAttributableToOwnersOfParentToTotalAssetsIFRSSummaryOfBusinessResults$",
                      r"EquityToAssetRatioUSGAAPSummaryOfBusinessResults$"],
 }
+
+
+def _repo_metrics():
+    from .config import ROOT
+    return ROOT / "edinet_data" / "metrics.parquet"
 
 
 def _key() -> str | None:
@@ -122,6 +131,8 @@ def update(cfg: dict, max_minutes: float = 30, start: str = "2014-06-01") -> dic
     state = json.loads(state_p.read_text()) if state_p.exists() else {"listed_until": start}
     docs = pd.read_parquet(docs_p) if docs_p.exists() else pd.DataFrame()
     mets = pd.read_parquet(met_p) if met_p.exists() else pd.DataFrame()
+    if mets.empty and _repo_metrics().exists():
+        mets = pd.read_parquet(_repo_metrics())
     t0 = time.time()
     budget = max_minutes * 60
     # 1) 書類一覧（全期間の半分の時間まで）
@@ -177,6 +188,9 @@ def update(cfg: dict, max_minutes: float = 30, start: str = "2014-06-01") -> dic
     if got:
         mets = pd.concat([mets] + got, ignore_index=True)
         mets.to_parquet(met_p)
+        if not os.environ.get("GITHUB_ACTIONS"):  # 日本の PC で取得した分をリポジトリ用にも保存（クラウドが読む）
+            _repo_metrics().parent.mkdir(exist_ok=True)
+            mets.to_parquet(_repo_metrics())
     docs.to_parquet(docs_p)
     state_p.write_text(json.dumps(state))
     have = mets.dropna(subset=["period_end"]) if len(mets) and "period_end" in mets else pd.DataFrame()
@@ -189,9 +203,10 @@ def update(cfg: dict, max_minutes: float = 30, start: str = "2014-06-01") -> dic
 
 def load(cfg: dict) -> pd.DataFrame | None:
     _, met_p, _ = _paths(cfg)
-    if not met_p.exists():
+    parts = [pd.read_parquet(p) for p in (met_p, _repo_metrics()) if p.exists()]
+    if not parts:
         return None
-    m = pd.read_parquet(met_p)
+    m = pd.concat(parts, ignore_index=True)
     if "period_end" not in m:
         return None
     m = m.dropna(subset=["period_end"])

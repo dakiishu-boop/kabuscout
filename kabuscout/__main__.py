@@ -28,7 +28,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -62,6 +62,9 @@ def main(argv=None):
         run_research(cfg, research=a.command == "research", trials=a.trials, budget_min=a.budget_min,
                      notify_on=not a.no_notify, collect=not a.no_collect)
 
+    elif a.command == "tdnet":  # 適時開示の過去分の取得だけ（決算好反応の判定に必要。クラウドの初回の取得を早く済ませる）
+        from . import tdnet
+        tdnet.update(cfg, max_minutes=a.budget_min or 60)
     elif a.command == "jquants":
         from . import jquants
         if a.probe or not (cfg["data"]["db_path"].parent / "jquants" / "probe.json").exists():
@@ -78,7 +81,7 @@ def main(argv=None):
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
-    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
+    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
         from . import site
         site.build(connect(cfg["data"]["db_path"]), cfg)
 

@@ -453,6 +453,16 @@ function renderAI() {
     <div class="card kpi"><div class="k">平常時の上位推奨</div><div class="v ${cls(m.normal.daily_top_ret)}">${pct(m.normal.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.normal.base_ret, 2)}・${(m.normal.n || 0).toLocaleString()}件</div></div>
     <div class="card kpi"><div class="k">危機局面の上位推奨</div><div class="v ${cls(m.crisis.daily_top_ret)}">${pct(m.crisis.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.crisis.base_ret, 2)}・${(m.crisis.n || 0).toLocaleString()}件</div></div></div>
     <p class="small muted">危機局面（リーマン・コロナ等）のデータは捨てずに学習していますが、重みを${pct0(DATA.config.crisis_weight)}に下げて「特例」として扱っています。</p>`;
+  const C = DATA.config || {};
+  if (C.plans) {
+    const keys = Object.keys(DATA.strategies);
+    const shared = `+${C.tp_atr}／−${C.sl_atr}ATR・${C.horizon}日`;
+    h += `<h2>今使っているルール</h2><div class="card tbl"><table><thead><tr><th>戦略</th><th>利確／損切・最長保有</th></tr></thead><tbody>` +
+      keys.map(k => { const p = C.plans[k]; return `<tr><td>${esc(stratName(k))}</td><td class="small">${p ? `<b>+${p.tp_atr}／−${p.sl_atr}ATR・${p.horizon_days}日</b>（研究ループで採用）` : `${shared}（共通ルール）`}</td></tr>`; }).join("") +
+      `</tbody></table></div><p class="small muted">損切の出し方: ${C.stop_mode === "close" ? "終値で割ったら翌日の寄付で売る" : "場中の逆指値（1ティック不利に約定する前提で検証）"}。
+      AIのモデル: ${C.model_params ? `葉${C.model_params.max_leaf_nodes}・最小${C.model_params.min_samples_leaf}件` : "既定"}・乱数の種${C.seeds || 1}つの平均${(C.extra_features || []).length ? `・追加の特徴量${C.extra_features.length}個` : ""}。
+      どれも研究ループが安全装置（年ごとの比較・試した数に応じた合格ライン・最後の確認用の期間）を通して採用したもの。</p>`;
+  }
   const R = DATA.research;
   if (R) {
     h += `<h2>研究ループ（${esc(R.run_at.slice(0, 10))}）</h2>

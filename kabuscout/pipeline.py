@@ -199,7 +199,7 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         macro.update(cfg)
         for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=60)),
                          ("適時開示", lambda: tdnet.update(cfg, max_minutes=120)),
-                         ("財務データ", lambda: edinet.update(cfg, max_minutes=90)),
+                         ("財務データ", lambda: edinet.update(cfg, max_minutes=60)),  # 研究ループの時間（約3時間）と合わせて制限時間内に収める
                          ("J-Quants 決算サマリ", lambda: jquants.update_fins(cfg, max_minutes=60))):
             try:
                 fn()

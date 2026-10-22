@@ -48,6 +48,8 @@ CANDIDATES = [
     dict(learning_rate=0.03, max_iter=150, max_leaf_nodes=7, min_samples_leaf=2000, l2_regularization=5.0),
     dict(learning_rate=0.05, max_iter=200, max_leaf_nodes=15, min_samples_leaf=500, l2_regularization=2.0),
     dict(learning_rate=0.05, max_iter=300, max_leaf_nodes=15, min_samples_leaf=200, l2_regularization=1.0),
+    # さらに細かく学ぶ設定（手元の2つの種で +10.9% → +15.7%・t=1.83 と有望だが種によるぶれが大きいので、研究ループに判定させる）
+    dict(learning_rate=0.05, max_iter=300, max_leaf_nodes=31, min_samples_leaf=100, l2_regularization=1.0),
 ]
 
 

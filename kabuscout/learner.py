@@ -69,10 +69,14 @@ def forward_paths(o, h, l, c, ti, ci, H: int) -> dict:
 
 def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
     """トリプルバリア法: 利確(+k_tp×ATR)・損切(-k_sl×ATR)・H日経過のどれが先か。
-    同じ日に両方に触れたら保守的に損切扱い。2日目以降に窓を開けて超えたら寄付きで約定。"""
+    同じ日に両方に触れたら保守的に損切扱い。2日目以降に窓を開けて超えたら寄付きで約定。
+    損切は逆指値（成行）なので、損切ラインより1ティック不利な値段で約定するものとする（買いは寄付・利確は指値・期限は引けで、想定どおりの値段）。
+    安い銘柄ほど1ティックの割合が大きく、AIが選びがちな低位株では無視できない（ジャーナル ラウンド9）。"""
+    from .risk import tick_size
     entry = p["entry"]
     n = len(entry)
     tp, sl = entry + k_tp * atr, entry - k_sl * atr
+    slip = tick_size(np.nan_to_num(entry, nan=1000.0))
     done = np.zeros(n, bool)
     lab = np.zeros(n, dtype="int8")
     exit_px = np.full(n, np.nan)
@@ -82,7 +86,7 @@ def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
         ok = ~np.isnan(hi)
         hit_sl = ok & ~done & (lo <= sl)
         hit_tp = ok & ~done & (hi >= tp) & ~hit_sl
-        exit_px = np.where(hit_sl, np.minimum(op, sl) if k > 1 else sl, exit_px)
+        exit_px = np.where(hit_sl, (np.minimum(op, sl) if k > 1 else sl) - slip, exit_px)
         exit_px = np.where(hit_tp, np.maximum(op, tp) if k > 1 else tp, exit_px)
         lab = np.where(hit_tp, 1, lab)
         exit_k = np.where(hit_sl | hit_tp, k, exit_k)

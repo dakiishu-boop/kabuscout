@@ -12,7 +12,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .risk import order_shares
+from .risk import order_shares, tick_size
 
 log = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: flo
     start = idx.searchsorted(entry_date)
     for k, i in enumerate(range(start, len(idx)), start=1):
         o, h, l, c = (float(ind[f][code].iat[i]) for f in ("open", "high", "low", "close"))
-        if l <= sl:
-            return idx[i], (min(o, sl) if k > 1 else sl), "損切", k
+        if l <= sl:  # 逆指値（成行）なので1ティック不利に約定（過去の検証と同じ）
+            return idx[i], (min(o, sl) if k > 1 else sl) - float(tick_size(sl)), "損切", k
         if h >= tp:
             return idx[i], (max(o, tp) if k > 1 else tp), "利確", k
         if k >= H:

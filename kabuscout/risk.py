@@ -21,3 +21,11 @@ def order_shares(acc: dict, equity: float, cash: float, price: float, stop_dist:
     if acc.get("risk_per_trade") and stop_dist > 0:
         n = min(n, equity * acc["risk_per_trade"] / stop_dist)
     return int(n // lot) * lot
+
+
+def tick_size(price):
+    """東証の呼値の単位（標準の表。TOPIX100 の銘柄はもっと細かいが、ここでは保守的に標準の表を使う）。配列でも可。"""
+    import numpy as np
+    p = np.asarray(price, dtype="float64")
+    return np.select([p <= 3000, p <= 5000, p <= 30000, p <= 50000, p <= 300000],
+                     [1.0, 5.0, 10.0, 50.0, 100.0], default=500.0)

@@ -35,6 +35,7 @@ def main(argv=None):
     ap.add_argument("--no-collect", action="store_true", help="追加データ（決算・需給・適時開示）の収集をしない")
     ap.add_argument("--trials", type=int)
     ap.add_argument("--budget-min", type=float)
+    ap.add_argument("--probe", action="store_true", help="J-Quants: どのデータが取れるかを確かめ直す")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     cfg = load_config()
@@ -63,11 +64,15 @@ def main(argv=None):
 
     elif a.command == "jquants":
         from . import jquants
-        jquants.probe(cfg)
+        if a.probe or not (cfg["data"]["db_path"].parent / "jquants" / "probe.json").exists():
+            jquants.probe(cfg)
         print(jquants.update_fins(cfg, max_minutes=a.budget_min or 20))
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
+    if a.command in ("jquants", "edinet"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
+        from . import site
+        site.build(connect(cfg["data"]["db_path"]), cfg)
 
     elif a.command == "site":
         from . import site

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 
 import pandas as pd
@@ -21,6 +22,7 @@ import requests
 log = logging.getLogger(__name__)
 API = "https://api.jquants.com/v2"
 _last = [0.0]
+_msg = [""]  # 直近のエラーメッセージ（契約プランの対象期間が書かれている）
 
 
 def _key() -> str | None:
@@ -62,6 +64,7 @@ def _get(cfg: dict, path: str, params: dict | None = None) -> tuple[int, list[di
                 msg = str(r.json().get("message", ""))[:200]
             except ValueError:
                 pass
+            _msg[0] = msg
             log.info("J-Quants %s %s → %d %s", path, q, r.status_code, msg)
             return r.status_code, rows
         js = r.json()
@@ -109,32 +112,41 @@ def probe(cfg: dict) -> dict:
     return out
 
 
+def coverage(cfg: dict) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """契約プランで取れる期間（Free は約2年・約12週遅れ）。範囲外の日を頼むと、エラーに期間が書かれて返ってくる。"""
+    today = pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None).normalize()
+    st, _ = _get(cfg, "/fins/summary", {"date": today.strftime("%Y%m%d")})
+    m = re.search(r"(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})", _msg[0]) if st == 400 else None
+    if m:
+        return pd.Timestamp(m.group(1)), pd.Timestamp(m.group(2))
+    if st == 200:  # 遅れの無いプラン
+        return today - pd.Timedelta(days=int(cfg.get("jquants", {}).get("history_days", 760))), today
+    return None
+
+
 def update_fins(cfg: dict, max_minutes: float = 20) -> dict:
-    """決算短信サマリを開示日ごとに取得して貯める（新しい日から順に。済んだ日は記録して飛ばす）。"""
+    """決算短信サマリを開示日ごとに取得して貯める（新しい日から順に。済んだ日は記録して飛ばす）。
+    対象期間の終わりは毎日1日ずつ進むので、まだ範囲に入っていない日は記録せず、範囲に入ってから取る。"""
     if not _key():
         return dict(skipped="no key")
     d = _dir(cfg)
     path, state_p = d / "fins_summary.parquet", d / "fins_state.json"
     state = json.loads(state_p.read_text()) if state_p.exists() else dict(done=[], empty=[])
-    done = set(state["done"]) | set(state.get("empty", []))
-    jc = cfg.get("jquants", {})
-    today = pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None).normalize()
-    start = today - pd.Timedelta(days=int(jc.get("history_days", 760)))
-    days = [x.strftime("%Y%m%d") for x in pd.bdate_range(start, today)][::-1]
-    # 直近の数日は開示が後から増えることがあるので取り直す
-    recent = set(days[:5])
-    todo = [x for x in days if x not in done or x in recent]
+    cov = coverage(cfg)
+    if cov is None:
+        log.warning("J-Quants 決算サマリの対象期間が分かりませんでした（キーやプランを確認）")
+        return dict(error="coverage")
+    lo, hi = (x.strftime("%Y%m%d") for x in cov)
+    state["empty"] = [x for x in state.get("empty", []) if x <= hi]  # 以前に範囲外を「空」と記録してしまった日を戻す
+    state["coverage"] = [lo, hi]
+    done = set(state["done"]) | set(state["empty"])
+    days = [x.strftime("%Y%m%d") for x in pd.bdate_range(cov[0], cov[1])][::-1]
+    todo = [x for x in days if x not in done or x in set(days[:3])]
     t0, got, new = time.time(), [], 0
     for day in todo:
         if time.time() - t0 > max_minutes * 60:
             break
         st, rows = _get(cfg, "/fins/summary", {"date": day})
-        if st == 400:  # 契約プランの範囲外の日付（古すぎる・新しすぎる）
-            state.setdefault("empty", []).append(day)
-            continue
-        if st in (401, 403):  # キーが無効・プランで使えない → 日付を「空」と記録せずに止める
-            log.warning("J-Quants 決算サマリが使えません（%d）。キーやプランを確認してください", st)
-            break
         if st != 200:
             log.warning("J-Quants 決算サマリ %s の取得に失敗（%d）→ 次回に再試行", day, st)
             break
@@ -142,8 +154,8 @@ def update_fins(cfg: dict, max_minutes: float = 20) -> dict:
             got.append(pd.DataFrame(rows))
             new += len(rows)
             state["done"].append(day)
-        else:
-            state.setdefault("empty", []).append(day)
+        else:  # 休日など開示の無い日
+            state["empty"].append(day)
         if len(got) >= 20:  # 途中で止まっても失わないようにこまめに保存
             _save(path, got)
             got = []
@@ -152,8 +164,10 @@ def update_fins(cfg: dict, max_minutes: float = 20) -> dict:
         _save(path, got)
     state_p.write_text(json.dumps(_dedup(state)))
     n = len(pd.read_parquet(path)) if path.exists() else 0
-    log.info("J-Quants 決算サマリ: 今回 %d件追加 → 合計 %d件（取得済み %d日）", new, n, len(set(state["done"])))
-    return dict(new=new, total=n, days=len(set(state["done"])))
+    left = len([x for x in days if x not in set(state["done"]) | set(state["empty"])])
+    log.info("J-Quants 決算サマリ（対象 %s〜%s）: 今回 %d件追加 → 合計 %d件（取得済み %d日・残り %d日）",
+             lo, hi, new, n, len(set(state["done"])), left)
+    return dict(new=new, total=n, days=len(set(state["done"])), left=left, coverage=[lo, hi])
 
 
 def _dedup(state: dict) -> dict:
@@ -171,3 +185,61 @@ def _save(path, frames: list[pd.DataFrame]) -> None:
 def load_fins(cfg: dict) -> pd.DataFrame | None:
     p = _dir(cfg) / "fins_summary.parquet"
     return pd.read_parquet(p) if p.exists() else None
+
+
+# ---------------------------------------------------------------- 特徴量
+# fwd_ey: 会社予想の1株利益 ÷ 株価（予想PERの逆数。高いほど割安）
+# fc_rev: 同じ決算期の会社予想（1株利益）の、前回の開示からの修正率
+# progress_gap: 通期予想の純利益に対する累計の進捗 − 経過した四半期の目安（1Q 25%・2Q 50%・3Q 75%）
+# sales_yoy: 売上高の前年同期比
+JQ_FEATURES = ["fwd_ey", "fc_rev", "progress_gap", "sales_yoy"]
+_QTR = {"1Q": 0.25, "2Q": 0.5, "3Q": 0.75, "FY": 1.0}
+
+
+def _num(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s.replace({"": None, "None": None, "nan": None}), errors="coerce")
+
+
+def events_table(fins: pd.DataFrame, lag_days: int) -> pd.DataFrame:
+    """開示ごとの値（使える日 = 開示日 + データの遅れ）。"""
+    f = fins.copy()
+    f["code"] = f["Code"].str[:4]
+    f["disc"] = pd.to_datetime(f["DiscDate"], errors="coerce")
+    f["fy_end"] = pd.to_datetime(f["CurFYEn"], errors="coerce")
+    f["per_end"] = pd.to_datetime(f["CurPerEn"], errors="coerce")
+    for c in ("FEPS", "NP", "FNP", "Sales"):
+        f[c] = _num(f[c]) if c in f else float("nan")
+    f = f.dropna(subset=["disc"]).sort_values(["code", "disc", "DiscNo"])
+    # 予想の修正率（同じ決算期の、前回の開示の予想と比べる）
+    prev = f.groupby(["code", "fy_end"])["FEPS"].shift(1)
+    f["fc_rev"] = ((f["FEPS"] - prev) / prev.abs()).where(prev.abs() > 0).clip(-1, 1)
+    # 進捗率（決算短信のみ。業績予想の修正だけの開示は実績が無い）
+    q = f["CurPerType"].map(_QTR)
+    f["progress_gap"] = (f["NP"] / f["FNP"] - q).where((f["FNP"] > 0) & q.notna() & f["NP"].notna()).clip(-1, 1)
+    # 前年同期比（同じ四半期の種類で、1年前の期末の開示と比べる）
+    k = f.dropna(subset=["Sales", "per_end"]).drop_duplicates(["code", "CurPerType", "per_end"], keep="last")
+    last_year = k.assign(per_end=k["per_end"] + pd.DateOffset(years=1))[["code", "CurPerType", "per_end", "Sales"]]
+    f = f.merge(last_year.rename(columns={"Sales": "sales_ly"}), on=["code", "CurPerType", "per_end"], how="left")
+    f["sales_yoy"] = (f["Sales"] / f["sales_ly"] - 1).where(f["sales_ly"] > 0).clip(-1, 3)
+    f["known"] = f["disc"] + pd.Timedelta(days=lag_days)
+    return f[["code", "known", "FEPS", "fc_rev", "progress_gap", "sales_yoy"]]
+
+
+def wide_features(fins: pd.DataFrame | None, close: pd.DataFrame, lag_days: int = 84) -> dict[str, pd.DataFrame]:
+    idx, cols = close.index, close.columns
+    empty = lambda: pd.DataFrame(float("nan"), index=idx, columns=cols, dtype="float32")
+    if fins is None or fins.empty:
+        return {f: empty() for f in JQ_FEATURES}
+    ev = events_table(fins, lag_days)
+    ev = ev[ev["code"].isin(cols) & (ev["known"] <= idx[-1])]
+    ev = ev.assign(pos=idx.searchsorted(ev["known"])).drop_duplicates(["code", "pos"], keep="last")
+    out = {}
+    for name in ("FEPS", "fc_rev", "progress_gap", "sales_yoy"):
+        w = ev.dropna(subset=[name]).pivot(index="pos", columns="code", values=name)
+        # 修正率は「修正があった直後」の情報なので60営業日で切る。それ以外は次の開示まで（最長300営業日）
+        w = w.reindex(index=range(len(idx)), columns=cols).ffill(limit=60 if name == "fc_rev" else 300)
+        w.index = idx
+        out[name] = w
+    res = {"fwd_ey": (out["FEPS"] / close).clip(-0.5, 0.5), "fc_rev": out["fc_rev"],
+           "progress_gap": out["progress_gap"], "sales_yoy": out["sales_yoy"]}
+    return {k: v.astype("float32") for k, v in res.items()}

@@ -109,7 +109,7 @@ bash scripts/install_launchd.sh
 3. Settings → Pages の Source を「GitHub Actions」にする
 4. Actions タブで `daily-screening` を手動実行（初回は全履歴取得で20分程度）
 
-以後、平日15:45に起動し、Yahooのデータが確定する15:55頃まで待ってから実行、通知とWebページ更新が行われます（GitHubの混雑で遅れることがあります）。学習状態はキャッシュで引き継がれます。
+以後、平日15:53に起動し、Yahooのデータが確定する15:55頃まで待ってから実行、通知とWebページ更新が行われます（GitHubの混雑で遅れることがあります）。学習状態はキャッシュで引き継がれます。
 結果は Web ページ（https://dakiishu-boop.github.io/kabuscout/）でも見られます。A と B を両方動かすと通知が二重になるのでどちらかに。
 
 ## データソースと拡張候補

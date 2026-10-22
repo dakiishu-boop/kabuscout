@@ -519,6 +519,6 @@
 
 ## 運用メモ
 
-- 毎日: 15:45 起動 → 15:55頃までデータ確定待ち → スクリーニング → Discord → 追加データ収集（決算・需給・適時開示）
+- 毎日: 15:53 起動（GitHub の混雑で遅れることあり） → 15:55頃までデータ確定待ち → スクリーニング → Discord → 追加データ収集（決算・需給・適時開示）
 - 毎週土曜 9:00: 研究ループ（戦略条件・売買ルール）→ 再学習 → 過去ペーパートレード → Discord
 - リポジトリ: https://github.com/dakiishu-boop/kabuscout ／ Web: https://dakiishu-boop.github.io/kabuscout/

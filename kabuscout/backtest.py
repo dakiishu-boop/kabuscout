@@ -152,7 +152,7 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
     cash = float(cap)
     open_pos: list[dict] = []
     pending: list[dict] = []
-    curve, trades = [], []
+    curve, trades, expo = [], [], []
     skipped = 0
     for i, d in enumerate(cal):
         # 1) 前日の注文を寄付で約定（寄付が想定より高く現金が足りなければ、買える単元まで減らす）
@@ -182,6 +182,7 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
             value += p["shares"] * (c if np.isfinite(c) else p["entry"])
         eq = cash + value
         curve.append((d, eq))
+        expo.append(value / eq if eq > 0 else 0.0)
         # 4) 新規の注文
         g = by_date.get(d)
         if g is None or i + 1 >= len(cal):
@@ -219,7 +220,7 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
             n_new -= 1
     eq = pd.Series(dict(curve))
     tr = pd.DataFrame(trades, columns=["date", "net", "pnl"])
-    return dict(equity=eq, trades=tr, skipped=skipped)
+    return dict(equity=eq, trades=tr, skipped=skipped, exposure=pd.Series(expo, index=eq.index))
 
 
 def after_tax(eq: pd.Series, rate: float = 0.20315) -> float:

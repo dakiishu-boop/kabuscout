@@ -115,6 +115,12 @@ class PriceStore:
         have = set(pq.read_schema(self._path("dividends")).names)
         df = pd.read_parquet(self._path("dividends"), columns=None if codes is None else [c for c in codes if c in have])
         df.index = pd.to_datetime(df.index)
+        # Yahoo の配当には桁違いの誤り（株価の10万倍など）が混じるので、1回で株価の30%を超える配当は除く
+        # （普通配当は通常10%未満、特別配当でも30%を超えることはまず無い・ジャーナル ラウンド9）
+        close = pd.read_parquet(self._path("close"), columns=[c for c in df.columns if c in set(pq.read_schema(self._path("close")).names)])
+        close.index = pd.to_datetime(close.index)
+        ref = close.reindex(df.index.union(close.index)).ffill().shift(1).reindex(df.index)  # 権利落ち日の前日の終値
+        df = df.mask((df / ref.reindex(columns=df.columns)) > 0.3)
         if start:
             df = df[df.index >= pd.Timestamp(start)]
         if end:

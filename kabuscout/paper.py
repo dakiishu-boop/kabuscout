@@ -17,18 +17,24 @@ from .risk import order_shares, tick_size
 log = logging.getLogger(__name__)
 
 
-def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: float, H: int):
-    """entry_date から最新日まで1本ずつ進めて、決済されたら (日付, 価格, 理由, 保有日数) を返す。"""
+def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: float, H: int, stop: str = "intraday"):
+    """entry_date から最新日まで1本ずつ進めて、決済されたら (日付, 価格, 理由, 保有日数) を返す。
+    stop="intraday": 場中の逆指値（1ティック不利に約定） / stop="close": 終値で割ったら翌日の寄付で売る（過去の検証と同じ）"""
     idx = ind["close"].index
     start = idx.searchsorted(entry_date)
+    pending = False
     for k, i in enumerate(range(start, len(idx)), start=1):
         o, h, l, c = (float(ind[f][code].iat[i]) for f in ("open", "high", "low", "close"))
-        if l <= sl:  # 逆指値（成行）なので1ティック不利に約定（過去の検証と同じ）
+        if stop == "close":
+            if pending:
+                return idx[i], o, "損切（終値割れの翌朝）", k
+        elif l <= sl:  # 逆指値（成行）なので1ティック不利に約定（過去の検証と同じ）
             return idx[i], (min(o, sl) if k > 1 else sl) - float(tick_size(sl)), "損切", k
         if h >= tp:
             return idx[i], (max(o, tp) if k > 1 else tp), "利確", k
         if k >= H:
             return idx[i], c, "期限", k
+        pending = stop == "close" and c <= sl
     return None, None, None, len(idx) - start
 
 
@@ -73,7 +79,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         if p["code"] not in ind["close"].columns:  # 上場廃止・データ欠落
             continue
         h = int(p["horizon"]) if pd.notna(p.get("horizon")) else H
-        ex_date, ex_px, why, held = _simulate(ind, p["code"], pd.Timestamp(p["entry_date"]), p["tp"], p["sl"], h)
+        ex_date, ex_px, why, held = _simulate(ind, p["code"], pd.Timestamp(p["entry_date"]), p["tp"], p["sl"], h,
+                                              stop=cfg["labeling"].get("stop_mode", "intraday"))
         if ex_date is None:
             con.execute("UPDATE paper_positions SET days_held=? WHERE id=?", (held, p["id"]))
             continue

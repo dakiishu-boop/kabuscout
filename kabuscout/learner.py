@@ -70,11 +70,12 @@ def forward_paths(o, h, l, c, ti, ci, H: int, fac=None) -> dict:
     return out
 
 
-def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
+def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int, stop: str = "intraday"):
     """トリプルバリア法: 利確(+k_tp×ATR)・損切(-k_sl×ATR)・H日経過のどれが先か。
     同じ日に両方に触れたら保守的に損切扱い。2日目以降に窓を開けて超えたら寄付きで約定。
-    損切は逆指値（成行）なので、損切ラインより1ティック不利な値段で約定するものとする（買いは寄付・利確は指値・期限は引けで、想定どおりの値段）。
-    安い銘柄ほど1ティックの割合が大きく、AIが選びがちな低位株では無視できない（ジャーナル ラウンド9）。"""
+    stop="intraday"（既定）: 損切は場中の逆指値（成行）なので、損切ラインより1ティック不利な値段で約定するものとする
+      （買いは寄付・利確は指値・期限は引けで、想定どおりの値段）。安い銘柄ほど1ティックの割合が大きい（ジャーナル ラウンド9）。
+    stop="close": 終値が損切ラインを割ったら翌日の寄付で売る（寄付は板寄せなので滑りなし。一晩の窓開けは受ける）。"""
     from .risk import tick_size
     entry = p["entry"]
     n = len(entry)
@@ -87,16 +88,24 @@ def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
     lab = np.zeros(n, dtype="int8")
     exit_px = np.full(n, np.nan)
     exit_k = np.full(n, np.nan)
+    pending = np.zeros(n, bool)  # stop="close": 前日の終値で割った → 今日の寄付で売る
     for k in range(1, H + 1):
-        hi, lo, op = p["h"][k - 1], p["l"][k - 1], p["o"][k - 1]
+        hi, lo, op, cl = p["h"][k - 1], p["l"][k - 1], p["o"][k - 1], p["c"][k - 1]
         ok = ~np.isnan(hi)
-        hit_sl = ok & ~done & (lo <= sl)
-        hit_tp = ok & ~done & (hi >= tp) & ~hit_sl
-        exit_px = np.where(hit_sl, (np.minimum(op, sl) if k > 1 else sl) - slip, exit_px)
+        if stop == "close":
+            hit_sl = ok & ~done & pending
+            exit_px = np.where(hit_sl, op, exit_px)
+            hit_tp = ok & ~done & ~hit_sl & (hi >= tp)
+        else:
+            hit_sl = ok & ~done & (lo <= sl)
+            hit_tp = ok & ~done & (hi >= tp) & ~hit_sl
+            exit_px = np.where(hit_sl, (np.minimum(op, sl) if k > 1 else sl) - slip, exit_px)
         exit_px = np.where(hit_tp, np.maximum(op, tp) if k > 1 else tp, exit_px)
         lab = np.where(hit_tp, 1, lab)
         exit_k = np.where(hit_sl | hit_tp, k, exit_k)
         done |= hit_sl | hit_tp
+        if stop == "close":
+            pending = ok & ~done & (cl <= sl)
     last = p["c"][H - 1]
     timeout = ~done & ~np.isnan(last)
     exit_px = np.where(timeout, last, exit_px)
@@ -111,7 +120,8 @@ def label(ind: dict, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     o, h, l, c = (ind[k].to_numpy() for k in ("open", "high", "low", "close"))
     fac = ind["split_factor"].to_numpy() if "split_factor" in ind else None
     p = forward_paths(o, h, l, c, df["_ti"].to_numpy(), df["_ci"].to_numpy(), H, fac=fac)
-    r = outcomes(p, df["atr"].to_numpy(), cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"], H)
+    r = outcomes(p, df["atr"].to_numpy(), cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"], H,
+                 stop=cfg["labeling"].get("stop_mode", "intraday"))
     df = df.copy()
     for k in ("entry", "tp", "sl", "label", "ret", "exit_days", "complete"):
         df[k] = r[k]

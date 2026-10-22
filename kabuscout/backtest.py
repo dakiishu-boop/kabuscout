@@ -80,7 +80,7 @@ def apply_plans(preds: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
     preds = preds.astype({"ret": "float64", "exit_days": "float64", "label": "float64", "complete": "bool"})
     for (kt, ks, hz), g in todo.groupby("_plan"):
         p = learner.forward_paths(*arrs, g["date"].map(tix).to_numpy(int), g["code"].map(cix).to_numpy(int), int(hz), fac=fac)
-        r = learner.outcomes(p, g["atr"].to_numpy(float), kt, ks, int(hz))
+        r = learner.outcomes(p, g["atr"].to_numpy(float), kt, ks, int(hz), stop=lab.get("stop_mode", "intraday"))
         preds.loc[g.index, "ret"] = np.asarray(r["ret"], dtype="float64")
         preds.loc[g.index, "label"] = np.asarray(r["label"], dtype="float64")
         preds.loc[g.index, "exit_days"] = np.asarray(r["exit_days"], dtype="float64")

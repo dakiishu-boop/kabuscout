@@ -281,7 +281,8 @@ def plan_search(con, cfg: dict, pl: pd.DataFrame, params: dict, vault_start, rng
     dates = np.array(sorted(sig["date"].unique()))
     search_end = dates[max(0, np.searchsorted(dates, vault_start) - Hmax)]
     ctx = dict(in_s=(sig["date"] < search_end).to_numpy(), in_v=(sig["date"] >= vault_start).to_numpy(),
-               normal=sig["crisis"].to_numpy() == 0, atr=sig["atr"].to_numpy("float64"))
+               normal=sig["crisis"].to_numpy() == 0, atr=sig["atr"].to_numpy("float64"),
+               stop=cfg["labeling"].get("stop_mode", "intraday"))
     years = sorted(sig.loc[ctx["in_s"], "date"].dt.year.unique())
     ctx["yidx"] = (sig["date"].dt.year - years[0]).clip(lower=0).to_numpy()
     ctx["n_years"] = len(years)
@@ -306,7 +307,7 @@ def _search_one(con, rc, key, name, mask, inc, plans, paths, ctx, state) -> dict
     atr, in_s, in_v, normal, yidx = (ctx[k][mask] for k in ("atr", "in_s", "in_v", "normal", "yidx"))
     evals = []
     for p in plans:
-        r = learner.outcomes(sub, atr, p["tp_atr"], p["sl_atr"], p["horizon_days"])
+        r = learner.outcomes(sub, atr, p["tp_atr"], p["sl_atr"], p["horizon_days"], stop=ctx["stop"])
         ok = r["complete"]
         net = np.where(ok, r["ret"] - rc["cost"], 0.0)
         days = np.where(ok, r["exit_days"], 0.0)

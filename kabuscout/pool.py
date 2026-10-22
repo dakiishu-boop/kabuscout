@@ -42,7 +42,8 @@ def _earn_stamp(cfg: dict) -> str:
 
 def _signature(cfg: dict) -> str:
     key = json.dumps(dict(v=POOL_VERSION, loose=loose_params(),
-                          lab={k: cfg["labeling"][k] for k in ("horizon_days", "tp_atr", "sl_atr")},
+                          lab={**{k: cfg["labeling"][k] for k in ("horizon_days", "tp_atr", "sl_atr")},
+                               "stop": cfg["labeling"].get("stop_mode", "intraday")},
                           start=cfg["data"]["history_start"], uni=cfg["universe"], earn=_earn_stamp(cfg)),
                      sort_keys=True, default=str)
     return hashlib.sha1(key.encode()).hexdigest()[:12]

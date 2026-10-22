@@ -27,6 +27,9 @@ labeling:
   horizon_days: 10
   tp_atr: 2.0
   sl_atr: 1.0
+  # 損切の出し方: intraday = 場中の逆指値（既定・1ティック不利に約定） / close = 終値で割ったら翌日の寄付で売る。
+  # close は過去の検証で年率が約5ポイント高い一方、最大下落が深い（ジャーナル ラウンド9）。リスクの好みで選ぶ
+  stop_mode: intraday
 
 screening:
   top_n: 15

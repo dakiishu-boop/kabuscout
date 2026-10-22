@@ -103,6 +103,7 @@ def collect(con, cfg: dict) -> dict:
                     stop_review_dd=stop_review_threshold(cfg),
                     stop_mode=cfg["labeling"].get("stop_mode", "intraday"),
                     consensus=cfg["paper_trading"].get("consensus") or 0,
+                    weak_consensus=cfg["paper_trading"].get("weak_consensus") or 0,
                     core_share=float((cfg["paper_trading"].get("core") or {}).get("share") or 0),
                     # 研究ループが採用した、今使っているルール（手元の検証を本番と揃えるためにも公開する）
                     plans=cfg["labeling"].get("per_strategy") or {}, model_params=cfg["learning"].get("model_params"),

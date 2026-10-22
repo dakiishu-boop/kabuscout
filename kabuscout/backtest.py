@@ -204,6 +204,8 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
         g = g.head(scan)
         if pick == "ai" and acc.get("consensus") and "agreement" in g:  # 合意モード: 上位の中で、3つのモデルが揃って高く評価した候補だけ（本番と同じ順）
             g = g[g["agreement"] >= acc["consensus"]]
+        elif pick == "ai" and acc.get("weak_consensus") and "agreement" in g and g["mkt_dev75"].iloc[0] < 0:
+            g = g[g["agreement"] >= acc["weak_consensus"]]  # 弱い相場（日経平均が75日線割れ）のときだけ合意モード
         held = {p["code"] for p in open_pos}
         cap_sec = acc.get("max_per_sector") if "sector" in g else None
         secs = [p.get("sector") for p in open_pos]

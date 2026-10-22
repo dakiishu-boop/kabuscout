@@ -98,6 +98,10 @@ def collect(con, cfg: dict) -> dict:
                     max_positions=cfg["paper_trading"]["max_positions"], picks_per_day=cfg["paper_trading"]["picks_per_day"],
                     risk_per_trade=cfg["paper_trading"].get("risk_per_trade"),
                     stop_review_dd=cfg["paper_trading"].get("stop_review_dd"),
+                    # 研究ループが採用した、今使っているルール（手元の検証を本番と揃えるためにも公開する）
+                    plans=cfg["labeling"].get("per_strategy") or {}, model_params=cfg["learning"].get("model_params"),
+                    extra_features=cfg["learning"].get("extra_features") or [], seeds=cfg["learning"].get("seeds", 1),
+                    max_per_sector=cfg["paper_trading"].get("max_per_sector"),
                     crisis_weight=cfg["learning"].get("crisis_weight", 0.3)),
     )
 

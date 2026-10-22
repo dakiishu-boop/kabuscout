@@ -56,10 +56,11 @@ def _paths(cfg):
 def _get(url: str, params: dict, tries: int = 3):
     for a in range(tries):
         try:
-            r = requests.get(url, params={**params, "Subscription-Key": _key()}, timeout=60)
+            r = requests.get(url, params={**params, "Subscription-Key": _key()}, timeout=60,
+                             headers={"User-Agent": "Mozilla/5.0 (KabuScout; personal research)"})
             if r.status_code == 200:
                 return r
-            log.warning("EDINET %s: HTTP %s", url.rsplit("/", 1)[-1], r.status_code)
+            log.warning("EDINET %s: HTTP %s %s", url.rsplit("/", 1)[-1], r.status_code, r.text[:200].replace("\n", " "))
         except Exception as e:
             log.warning("EDINET 通信エラー: %s", e)
         time.sleep(5 * (a + 1))
@@ -143,6 +144,9 @@ def update(cfg: dict, max_minutes: float = 30, start: str = "2014-06-01") -> dic
         docs = pd.concat([docs] + [x for x in new_lists if len(x)], ignore_index=True).drop_duplicates("docID")
     # 2) 取得する書類を選ぶ: 会社ごとに最新の有報と、そこから4年ずつさかのぼった有報
     fetched = set(mets["docID"]) if len(mets) else set()
+    if docs.empty:
+        state_p.write_text(json.dumps(state))
+        return dict(docs=0, fetched=0, listed_until=state["listed_until"])
     want = []
     for code, g in docs.sort_values("periodEnd", ascending=False).groupby("code"):
         last_pe = None

@@ -115,10 +115,10 @@ def plan_horizon(cfg: dict) -> int:
     return max([lab["horizon_days"]] + [p["horizon_days"] for p in (lab.get("per_strategy") or {}).values()])
 
 
-def with_plan_outcomes(d: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def with_plan_outcomes(d: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
     """各シグナルに、実際に使う売買ルール（戦略ごと）での結果（ret_plan など）を付ける。"""
     from .backtest import apply_plans
-    rel = apply_plans(d[["date", "code", "strategies", "atr", "ret", "label", "exit_days", "complete"]].copy(), cfg)
+    rel = apply_plans(d[["date", "code", "strategies", "atr", "ret", "label", "exit_days", "complete"]].copy(), cfg, store)
     return d.assign(ret_plan=rel["ret"].astype(float), label_plan=rel["label"].astype(float),
                     exit_plan=rel["exit_days"].astype(float), complete_plan=rel["complete"].astype(bool))
 

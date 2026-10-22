@@ -52,7 +52,7 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[st
                      complete=pr["complete_plan"], _relabeled=1)
 
 
-def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def apply_plans(preds: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
     """戦略ごとの売買ルールが採用されていれば、そのルールで各取引の結果（損益・保有日数）を計算し直す
     （過去ペーパートレードを本番と同じ売買ルールで行うため）。"""
     from .strategies import plan_for
@@ -66,7 +66,7 @@ def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     todo = preds[preds["_plan"] != glob]
     if todo.empty:
         return preds.drop(columns="_plan")
-    px = PriceStore(cfg["data"]["price_dir"]).load(codes=sorted(todo["code"].unique()))
+    px = (store or PriceStore(cfg["data"]["price_dir"])).load(codes=sorted(todo["code"].unique()))
     c = px["close"].ffill(limit=5)
     o, h, l = (px[k].fillna(c) for k in ("open", "high", "low"))
     tix = {d: i for i, d in enumerate(c.index)}
@@ -98,11 +98,11 @@ def gate_active(gate: dict | None, mkt_dev75: float, mkt_ret20: float, crisis: b
 _CLOSE: dict = {}
 
 
-def _closes(cfg: dict, codes) -> pd.DataFrame:
+def _closes(cfg: dict, codes, store=None) -> pd.DataFrame:
     """保有中の銘柄を毎日の終値で評価するための終値表（同じ銘柄の組み合わせなら使い回す）。"""
-    key = tuple(sorted(codes))
+    key = (tuple(sorted(codes)), id(store))
     if _CLOSE.get("key") != key:
-        c = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=list(key))["close"]
+        c = (store or PriceStore(cfg["data"]["price_dir"])).load(fields=["close"], codes=list(key[0]))["close"]
         _CLOSE.update(key=key, close=c.ffill(limit=5))
     return _CLOSE["close"]
 
@@ -119,7 +119,7 @@ def with_stops(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0,
              gate: dict | None = "config", max_positions: int | None = None, picks_per_day: int | None = None,
-             account: dict | None = None) -> dict:
+             account: dict | None = None, store=None) -> dict:
     """実際の口座と同じように、現金・株数（100株単位）・毎日の時価で資産を追う（最大下落も含み損込みで測る）。
     シグナル日の終値で株数を決めて注文し、翌営業日の寄付で約定、売買ルール（利確/損切/期限）で決済する。
     株数の決め方は risk.order_shares（本番のペーパートレードと同じ）。account で資金などを差し替えて比較できる。"""
@@ -134,7 +134,7 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
         gate = pc.get("gate")
     preds = with_stops(preds, cfg)
     cal = cal[cal >= preds["date"].min()]
-    close = _closes(cfg, preds["code"].unique()).reindex(cal).ffill(limit=5)
+    close = _closes(cfg, preds["code"].unique(), store).reindex(cal).ffill(limit=5)
     cix = {k: j for j, k in enumerate(close.columns)}
     C = close.to_numpy("float64")
     by_date = {d: g for d, g in preds.groupby("date")}

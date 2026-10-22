@@ -5,7 +5,9 @@ name: daily-screening
 
 on:
   schedule:
-    - cron: "45 6 * * 1-5"   # 15:45 JST。Yahooのデータは約20分遅れなので、確定(15:55頃)まで自動で待ってから実行
+    # 15:53 JST。GitHub の定時実行は混む時刻（毎時0分・30分・45分など）に大きく遅れやすい（2026-10-22 は45分遅れ）ので、
+    # 空いていそうな時刻にする。Yahooのデータの確定（15:55頃）までは自動で待つ
+    - cron: "53 6 * * 1-5"
   workflow_dispatch:
     inputs:
       args:

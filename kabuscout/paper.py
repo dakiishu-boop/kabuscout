@@ -99,6 +99,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         cand = picks[~picks["code"].isin(held)]
         if pc.get("min_prob") and cand["prob"].notna().any():
             cand = cand[cand["prob"] >= pc["min_prob"]]
+        if pc.get("consensus") and "agreement" in cand and cand["agreement"].notna().any():
+            cand = cand[cand["agreement"] >= pc["consensus"]]  # 合意モード（過去の検証と同じ）
         # 決算をまたぐ銘柄も避けない: 過去ペーパートレードで避けても年率・最大下落とも改善せず（AIが「次の決算までの日数」を
         # 特徴量として織り込み済み）、本番と過去の検証の売買ルールを揃えるため（ジャーナル ラウンド9）
         n_new = min(free, pc["picks_per_day"])

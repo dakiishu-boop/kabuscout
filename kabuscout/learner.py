@@ -192,6 +192,13 @@ def predict(models: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return parts["win"].to_numpy(), parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()
 
 
+def agreement(models: dict, df: pd.DataFrame) -> np.ndarray:
+    """3つのモデルがどれだけ揃って高く評価しているか: 同じ日の候補内での順位（0〜1）の3つのうち一番低いもの。
+    合意モード（paper_trading.consensus）では、これが高い候補だけを買う。"""
+    parts = _parts(models, df)
+    return parts.groupby(df["date"].to_numpy()).rank(pct=True).min(axis=1).to_numpy()
+
+
 def bundle_predict(bundle: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """保存済みモデルでの (勝率予測, AIの評価)。ラウンド7までの旧モデル（勝ちやすさだけ）にも対応。"""
     if "models" in bundle:
@@ -398,6 +405,7 @@ def score(df: pd.DataFrame, bundle: dict | None, weights: dict[str, float]) -> p
     df["rule_score"] = rule_score(df, weights)
     if bundle is not None and len(df):
         df["prob"], df["ai_score"] = bundle_predict(bundle, df)
+        df["agreement"] = agreement(bundle["models"], df) if "models" in bundle else np.nan
         alpha = ai_weight(bundle["metrics"]) if "daily_top_ret" in bundle.get("metrics", {}) else bundle["alpha"]
         df["final_score"] = alpha * df["ai_score"].rank(pct=True) + (1 - alpha) * df["rule_score"].rank(pct=True)
         df["model_version"] = bundle["version"]

@@ -45,8 +45,9 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[st
         te = d[d["date"].dt.year == y]
         if te.empty:
             continue
-        prob, sc = learner.predict(learner.fit_models(tr, cfg, params=params, features=features), te)
-        out.append(te.assign(prob=sc, win_prob=prob))
+        models = learner.fit_models(tr, cfg, params=params, features=features)
+        prob, sc = learner.predict(models, te)
+        out.append(te.assign(prob=sc, win_prob=prob, agreement=learner.agreement(models, te)))
         log.info("  %d年: %d件で学習 → %d件を判定", y, len(tr), len(te))
     pr = pd.concat(out, ignore_index=True)
     return pr.assign(ret=pr["ret_plan"], label=pr["label_plan"], exit_days=pr["exit_plan"],
@@ -200,11 +201,14 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
         if n_new <= 0:
             continue
         g = g.sort_values("prob", ascending=False) if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
+        g = g.head(scan)
+        if pick == "ai" and acc.get("consensus") and "agreement" in g:  # 合意モード: 上位の中で、3つのモデルが揃って高く評価した候補だけ（本番と同じ順）
+            g = g[g["agreement"] >= acc["consensus"]]
         held = {p["code"] for p in open_pos}
         cap_sec = acc.get("max_per_sector") if "sector" in g else None
         secs = [p.get("sector") for p in open_pos]
         avail = cash
-        for _, r in g.head(scan).iterrows():
+        for _, r in g.iterrows():
             if n_new <= 0:
                 break
             if r["code"] in held or r["code"] not in cix:

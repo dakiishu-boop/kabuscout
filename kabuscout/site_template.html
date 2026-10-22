@@ -469,6 +469,7 @@ function renderAI() {
       keys.map(k => { const p = C.plans[k]; return `<tr><td>${esc(stratName(k))}</td><td class="small">${p ? `<b>+${p.tp_atr}／−${p.sl_atr}ATR・${p.horizon_days}日</b>（研究ループで採用）` : `${shared}（共通ルール）`}</td></tr>`; }).join("") +
       `</tbody></table></div><p class="small muted">損切の出し方: ${C.stop_mode === "close" ? "終値で割ったら翌日の寄付で売る" : "場中の逆指値（1ティック不利に約定する前提で検証）"}。
       AIのモデル: ${C.model_params ? `葉${C.model_params.max_leaf_nodes}・最小${C.model_params.min_samples_leaf}件` : "既定"}・乱数の種${C.seeds || 1}つの平均${(C.extra_features || []).length ? `・追加の特徴量${C.extra_features.length}個` : ""}。
+      ${C.consensus ? `合意モード: 3つのモデルがそろって上位${pct0(1 - C.consensus)}と評価した銘柄だけを買う。` : ""}${C.core_share ? `資金の${pct0(C.core_share)}は指数に固定（コア）。` : ""}
       どれも研究ループが安全装置（年ごとの比較・試した数に応じた合格ライン・最後の確認用の期間）を通して採用したもの。</p>`;
   }
   const R = DATA.research;

@@ -18,6 +18,19 @@ FEATURES = [
     "mkt_dev75", "mkt_ret5", "mkt_ret20", "mkt_vol20", "breadth25",
 ]
 
+# 候補の特徴量（シグナル表には保存するが、検証で効くと分かるまでAIには渡さない）。
+# ラウンド9の調べで「値動きの大きさ・出来高」が一番効いていたので、その周辺を増やす
+CANDIDATE_FEATURES = [
+    "updown_vol20",  # 直近20日の出来高のうち、上がった日の出来高の割合（買いの勢い）
+    "amihud20",      # 売買代金あたりの値動きの大きさ（流動性の低さ。log10）
+    "vol_trend",     # 出来高の20日平均 ÷ 120日平均
+    "rvol_ratio",    # 日々の値動きのばらつき 20日 ÷ 120日（荒れ始め/落ち着き）
+    "max_ret20",     # 直近20日で最大の1日の上昇率（宝くじ的な銘柄は後で負けやすいという知見）
+    "skew60",        # 日々の騰落率の歪み（60日）
+    "beta60",        # 日経平均に対する感応度（60日。低ベータ効果）
+    "rvol60",        # 日々の騰落率のばらつき（60日・年率）
+]
+
 
 # 戦略の判定と売買シミュレーションに必要な生の値（シグナル表に一緒に保存する）
 RAW_FIELDS = [
@@ -132,6 +145,21 @@ def compute(panel: dict[str, pd.DataFrame], market_code: str,
     ind["mkt_ret20"] = _bcast(m / m.shift(20) - 1, c)
     ind["mkt_vol20"] = _bcast(m_ret.rolling(20).std() * np.sqrt(250), c)
     ind["stress"] = _bcast(market_stress(m).astype(float), c)
+
+    # ---- 候補の特徴量（CANDIDATE_FEATURES）
+    r1 = c.pct_change(fill_method=None)
+    v20 = v.rolling(20, min_periods=10).sum().replace(0, np.nan)
+    ind["updown_vol20"] = v.where(r1 > 0, 0.0).rolling(20, min_periods=10).sum() / v20
+    ind["amihud20"] = np.log10((r1.abs() / (c * v).replace(0, np.nan)).rolling(20, min_periods=10).mean().clip(lower=1e-15) * 1e9)
+    ind["vol_trend"] = vavg20 / v.rolling(120, min_periods=60).mean().replace(0, np.nan)
+    sd20, sd120 = r1.rolling(20, min_periods=15).std(), r1.rolling(120, min_periods=60).std()
+    ind["rvol_ratio"] = sd20 / sd120.replace(0, np.nan)
+    ind["max_ret20"] = r1.rolling(20, min_periods=15).max()
+    ind["skew60"] = r1.rolling(60, min_periods=40).skew()
+    mr = m_ret.reindex(c.index)
+    cov = r1.mul(mr, axis=0).rolling(60, min_periods=40).mean() - r1.rolling(60, min_periods=40).mean().mul(mr.rolling(60, min_periods=40).mean(), axis=0)
+    ind["beta60"] = cov.div(mr.rolling(60, min_periods=40).var().replace(0, np.nan), axis=0).clip(-3, 5)
+    ind["rvol60"] = r1.rolling(60, min_periods=40).std() * np.sqrt(250)
     above = (c > sma[25]).where(sma[25].notna())
     ind["breadth25"] = _bcast(above.mean(axis=1), c)
 

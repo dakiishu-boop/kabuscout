@@ -188,11 +188,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     return dict(date=data_date, top=top, n_signals=len(today))
 
 
-def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None, notify_on=True) -> None:
+def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None, notify_on=True, collect: bool = True) -> None:
     """週末用: 研究ループ → （条件が変わったら）再学習 → 過去ペーパートレード → Webページ → 通知。"""
     from . import backtest, research as rs
     con = connect(cfg["data"]["db_path"])
-    if research:  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
+    if research and collect:  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
         uni = data.refresh_universe(con, cfg)
         data.update_prices(store_of(cfg), uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
         macro.update(cfg)
@@ -218,12 +218,17 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         log.info("売買ルールを更新: %s → シグナル表を作り直します", summary["plan"]["candidate"])
         pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
     ds = dataset(cfg, pl)
-    ms = None
+    ms = fs = None
     if research:  # AIのモデル設定（正則化の強さ）の研究。勝った設定の過去ペーパートレードの予測をそのまま使う
         proxy = cfg["universe"]["market_proxy"]
         cal = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index
         ms = rs.model_search(con, cfg, ds, cal)
         if ms["adopted"]:
+            from .config import load_config
+            cfg = load_config()
+        fs = rs.feature_search(con, cfg, ds, cal, ms.pop("_row"))
+        ms["_preds"] = fs.pop("_preds")
+        if fs["adopted"]:
             from .config import load_config
             cfg = load_config()
     if research:  # 週1回は必ず再学習（新旧モデルの対決は train 内で行う）
@@ -238,10 +243,12 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
             j = json.loads(rj.read_text())
             j["gate"], j["portfolio"] = g, pf
             j["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
+            j["features"] = fs if research else None
             rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
         if summary is not None:
             summary["gate"], summary["portfolio"] = g, pf
             summary["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
+            summary["features"] = fs
         if g["adopted"] or pf["adopted"]:
             from .config import load_config
             cfg = load_config()

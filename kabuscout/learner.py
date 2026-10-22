@@ -123,6 +123,12 @@ def with_plan_outcomes(d: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
                     exit_plan=rel["exit_days"].astype(float), complete_plan=rel["complete"].astype(bool))
 
 
+def model_features(cfg: dict) -> list[str]:
+    """AIに渡す特徴量。毎週の研究ループで採用された候補の特徴量があれば足す。"""
+    extra = [f for f in (cfg["learning"].get("extra_features") or []) if f not in MODEL_FEATURES]
+    return MODEL_FEATURES + extra
+
+
 def model_params(cfg: dict) -> dict:
     """AIのモデル設定。毎週の研究ループで採用された設定があればそれ、無ければ最も正則化の強い設定。"""
     return cfg["learning"].get("model_params") or CANDIDATES[0]
@@ -131,7 +137,7 @@ def model_params(cfg: dict) -> dict:
 def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features: list[str] | None = None) -> dict:
     """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。features で特徴量を差し替えて比較できる。"""
     params = params or model_params(cfg)
-    features = features or MODEL_FEATURES
+    features = features or model_features(cfg)
     X, w = tr[features], _weights(tr, cfg["learning"])
     lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
     return dict(
@@ -299,9 +305,10 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     # 全データで再学習して本番モデルに
     final = fit_models(d, cfg)
     sample = ho.sample(min(4000, len(ho)), random_state=0)
-    pi = permutation_importance(models["win"], sample[MODEL_FEATURES], sample["label"],
+    feats = model_features(cfg)
+    pi = permutation_importance(models["win"], sample[feats], sample["label"],
                                 n_repeats=3, random_state=0, scoring="roc_auc")
-    imp = sorted(zip(MODEL_FEATURES, pi.importances_mean), key=lambda t: -t[1])[:12]
+    imp = sorted(zip(feats, pi.importances_mean), key=lambda t: -t[1])[:12]
 
     auc = best_met["auc"]
     # 並べ方は過去ペーパートレードと同じ「AIの評価だけ」。AIとルールを混ぜると年率・最大下落とも悪化した
@@ -312,7 +319,7 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     best_met.update(alpha=alpha, verdict=verdict, importance=[(k, float(v)) for k, v in imp],
                     train_n=int(len(d)), holdout_from=str(split)[:10], targets=list(final))
     path = cfg["data"]["model_dir"] / f"model_{version}.joblib"
-    bundle = dict(models=final, features=MODEL_FEATURES, version=version, alpha=alpha,
+    bundle = dict(models=final, features=model_features(cfg), version=version, alpha=alpha,
                   metrics=best_met, data_end=data_end)
     joblib.dump(bundle, path)
     con.execute("UPDATE models SET active=0")

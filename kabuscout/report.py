@@ -244,6 +244,9 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
     M = (summary or {}).get("model")
     if M:
         embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if M['adopted'] else '・'} **AIのモデル設定**（{M['trials']}通り／累計{M['cum_trials']}）: {M['reason']}")[:4000]
+    F = (summary or {}).get("features")
+    if F and F.get("trials"):
+        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if F['adopted'] else '・'} **AIの特徴量**（{F['trials']}通り／累計{F['cum_trials']}）: {F['reason']}")[:4000]
     G = (summary or {}).get("gate")
     if G:
         embeds[0]["description"] = (embeds[0]["description"] + f"\n\n{'✅' if G['adopted'] else '・'} **地合いによる買い控え**（{G['trials']}通り／累計{G['cum_trials']}）: {G['reason']}")[:4000]

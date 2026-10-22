@@ -60,7 +60,7 @@ def main(argv=None):
     elif a.command in ("research", "backtest"):
         from .pipeline import run_research
         run_research(cfg, research=a.command == "research", trials=a.trials, budget_min=a.budget_min,
-                     notify_on=not a.no_notify)
+                     notify_on=not a.no_notify, collect=not a.no_collect)
 
     elif a.command == "jquants":
         from . import jquants

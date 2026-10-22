@@ -498,64 +498,110 @@ def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex)
     return res
 
 
-def model_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
-    """AIのモデル設定（正則化の強さ）を、過去ペーパートレード全体の年ごとの成績で比べる（安全装置は同じ）。
-    ラウンド9の裏取りで、正則化の弱い設定の方が年率が高く見えたが、何通りか見て一番を選ぶのは選択バイアスなので、
-    ここで多重検定の補正と金庫をかけて判定する。勝った設定の予測を返すので、過去ペーパートレードにそのまま使える。"""
+def _wf_row(cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, params: dict | None = None, features: list[str] | None = None) -> dict:
+    """ウォークフォワードで過去ペーパートレードをして、金庫より前の年ごとの成績と金庫期間の成績を返す。"""
     from . import backtest
+    vault_start = cal[-cfg["research"]["vault_days"]]
+    pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=params, features=features)
+    pr = backtest.with_sectors(backtest.with_stops(pr[pr["complete"]], cfg), cfg)
+    eq = backtest.simulate(pr, cal[cal >= pr["date"].min()], cfg, "ai")["equity"]
+    s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
+    yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
+                    for y, g in s_.groupby(s_.index.year)})
+    return dict(preds=pr, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1))
+
+
+def _judge(con, cfg: dict, key: str, label: str, inc_row: dict, rows: list[dict], name) -> dict:
+    """候補を現行と比べて採否を決める（年ごとの差の t 値・累計の試行回数で補正・金庫・最大下落の大きな悪化は不可）。"""
     rc = cfg["research"]
-    inc = learner.model_params(cfg)
-    variants = [inc] + [p for p in learner.CANDIDATES if p != inc]
-    vault_start = cal[-rc["vault_days"]]
-    rows = []
-    for p in variants:
-        pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=p)
-        pr = backtest.with_sectors(backtest.with_stops(pr[pr["complete"]], cfg), cfg)
-        eq = backtest.simulate(pr, cal[cal >= pr["date"].min()], cfg, "ai")["equity"]
-        s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
-        yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
-                        for y, g in s_.groupby(s_.index.year)})
-        rows.append(dict(p=p, preds=pr, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1)))
-        log.info("  モデル設定 葉%d・最小%d: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", p["max_leaf_nodes"], p["min_samples_leaf"],
-                 rows[-1]["stats"]["cagr"] * 100, rows[-1]["stats"]["max_dd"] * 100, rows[-1]["vault"] * 100)
-    inc_row = rows[0]
-    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy='_model'").fetchone()[0]
-    cum = int(prev + len(variants) - 1)
+    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy=?", (key,)).fetchone()[0]
+    cum = int(prev + len(rows))
     t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
     best, t_best = None, -9.0
-    for r in rows[1:]:
+    for r in rows:
         d = (r["yearly"] - inc_row["yearly"]).dropna()
         r["t"] = float(d.mean() / (d.std(ddof=1) / np.sqrt(len(d)))) if len(d) >= 3 and d.std(ddof=1) > 0 else None
         if r["t"] is not None and r["t"] > t_best:
             best, t_best = r, r["t"]
-    name = lambda p: f"葉{p['max_leaf_nodes']}・最小{p['min_samples_leaf']}件・学習率{p['learning_rate']}"
-    res = dict(incumbent=name(inc), trials=len(variants) - 1, cum_trials=cum, t_needed=t_needed, adopted=False,
-               table=[dict(name=name(r["p"]), cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"],
-                           t=r.get("t")) for r in rows])
-    winner = inc_row
+    res = dict(incumbent=name(inc_row), trials=len(rows), cum_trials=cum, t_needed=t_needed, adopted=False,
+               table=[dict(name=name(r), cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"], t=r.get("t"))
+                      for r in [inc_row] + rows])
+    # 合格した候補が複数あれば、最大下落の一番小さいものを選ぶ（資金100万円の実運用向け。
+    # 年率の t 値だけで選ぶと、似た候補の間で実行ごとに入れ替わって不安定だった＝ラウンド9）
+    ok = [r for r in rows if r["t"] is not None and r["t"] >= t_needed and r["vault"] >= inc_row["vault"]
+          and r["stats"]["max_dd"] >= inc_row["stats"]["max_dd"] - 0.05]
+    if ok:
+        best = max(ok, key=lambda r: r["stats"]["max_dd"])
+        t_best = best["t"]
     if best is None or t_best < t_needed:
-        res["reason"] = (f"最有力「{name(best['p'])}」も改善が偶然の範囲（t={t_best:.2f} < 必要{t_needed:.2f}）" if best else "候補なし")
+        res["reason"] = (f"最有力「{name(best)}」も改善が偶然の範囲（t={t_best:.2f} < 必要{t_needed:.2f}）" if best else "候補なし")
     elif best["vault"] < inc_row["vault"]:
-        res["reason"] = f"最有力「{name(best['p'])}」は金庫期間で現行に負け（{best['vault']:+.1%} vs {inc_row['vault']:+.1%}）"
+        res["reason"] = f"最有力「{name(best)}」は金庫期間で現行に負け（{best['vault']:+.1%} vs {inc_row['vault']:+.1%}）"
     elif best["stats"]["max_dd"] < inc_row["stats"]["max_dd"] - 0.05:
-        res["reason"] = f"最有力「{name(best['p'])}」は最大下落が大きく悪化（{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}）"
+        res["reason"] = f"最有力「{name(best)}」は最大下落が大きく悪化（{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}）"
     else:
-        winner = best
-        res.update(adopted=True, candidate=best["p"],
-                   reason=f"採用「{name(best['p'])}」: 年率 {inc_row['stats']['cagr']:+.1%}→{best['stats']['cagr']:+.1%}、最大下落 "
+        res.update(adopted=True, winner=best,
+                   reason=f"採用「{name(best)}」: 年率 {inc_row['stats']['cagr']:+.1%}→{best['stats']['cagr']:+.1%}、最大下落 "
                           f"{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}、金庫でも {inc_row['vault']:+.1%}→{best['vault']:+.1%}")
-    log.info("  AIのモデル設定: %d通り（累計%d）→ %s", len(variants) - 1, cum, res["reason"])
+    log.info("  %s: %d通り（累計%d）→ %s", label, len(rows), cum, res["reason"])
     con.execute("INSERT INTO research_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
-        datetime.now().isoformat(timespec="seconds"), "_model", len(variants) - 1, cum, json.dumps(inc),
-        json.dumps(res.get("candidate")), inc_row["stats"]["cagr"], best["stats"]["cagr"] if best else None,
-        t_best, t_needed, inc_row["vault"], best["vault"] if best else None, 0, 0, int(res["adopted"]), res["reason"]))
+        datetime.now().isoformat(timespec="seconds"), key, len(rows), cum, name(inc_row), name(best) if best else None,
+        inc_row["stats"]["cagr"], best["stats"]["cagr"] if best else None, t_best, t_needed, inc_row["vault"],
+        best["vault"] if best else None, 0, 0, int(res["adopted"]), res["reason"]))
     con.commit()
+    return res
+
+
+def _save_param(cfg: dict, key: str, value, label: str) -> None:
+    from .pipeline import params_path
+    p = params_path(cfg)
+    saved = json.loads(p.read_text()) if p.exists() else {}
+    saved[key] = value
+    saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={label: value}))
+    p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
+
+
+def model_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
+    """AIのモデル設定（正則化の強さ）を、過去ペーパートレード全体の年ごとの成績で比べる（安全装置は同じ）。
+    ラウンド9の裏取りで、正則化の弱い設定の方が良く見えたが、何通りか見て一番を選ぶのは選択バイアスなので、
+    ここで多重検定の補正と金庫をかけて判定する。勝った設定の予測を返すので、続く研究と過去ペーパートレードにそのまま使える。"""
+    inc = learner.model_params(cfg)
+    name = lambda r: f"葉{r['p']['max_leaf_nodes']}・最小{r['p']['min_samples_leaf']}件・学習率{r['p']['learning_rate']}"
+    inc_row = dict(_wf_row(cfg, ds, cal, params=inc), p=inc)
+    rows = [dict(_wf_row(cfg, ds, cal, params=p), p=p) for p in learner.CANDIDATES if p != inc]
+    for r in [inc_row] + rows:
+        log.info("  モデル設定 %s: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", name(r), r["stats"]["cagr"] * 100,
+                 r["stats"]["max_dd"] * 100, r["vault"] * 100)
+    res = _judge(con, cfg, "_model", "AIのモデル設定", inc_row, rows, name)
+    winner = inc_row
     if res["adopted"]:
-        from .pipeline import params_path
-        p = params_path(cfg)
-        saved = json.loads(p.read_text()) if p.exists() else {}
-        saved["model_params"] = res["candidate"]
-        saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={"AIのモデル設定": res["candidate"]}))
-        p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
-    res["_preds"] = winner["preds"]
+        winner = res.pop("winner")
+        res["candidate"] = winner["p"]
+        _save_param(cfg, "model_params", winner["p"], "AIのモデル設定")
+    res["_preds"], res["_row"] = winner["preds"], winner
+    return res
+
+
+def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_row: dict) -> dict:
+    """候補の特徴量のグループをAIに足すかを、同じ安全装置で判定する。inc_row は現行（model_search の勝者）の結果。"""
+    from .indicators import CANDIDATE_FEATURES
+    groups = {"値動き・出来高の追加特徴量": CANDIDATE_FEATURES}
+    have = set(cfg["learning"].get("extra_features") or [])
+    groups = {k: v for k, v in groups.items() if not set(v) <= have}
+    if not groups:
+        return dict(adopted=False, reason="候補なし（すべて採用済み）", trials=0, cum_trials=0, _preds=inc_row["preds"])
+    base = learner.model_features(cfg)
+    rows = [dict(_wf_row(cfg, ds, cal, features=base + [f for f in v if f not in base]), g=k, add=v) for k, v in groups.items()]
+    name = lambda r: ("現行の特徴量" if "g" not in r else f"＋{r['g']}（{len(r['add'])}個）")
+    for r in rows:
+        log.info("  特徴量 %s: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", name(r), r["stats"]["cagr"] * 100,
+                 r["stats"]["max_dd"] * 100, r["vault"] * 100)
+    res = _judge(con, cfg, "_features", "AIの特徴量", inc_row, rows, name)
+    preds = inc_row["preds"]
+    if res["adopted"]:
+        w = res.pop("winner")
+        res["candidate"] = sorted(have | set(w["add"]))
+        _save_param(cfg, "extra_features", res["candidate"], "AIの特徴量")
+        preds = w["preds"]
+    res["_preds"] = preds
     return res

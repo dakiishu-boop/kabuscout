@@ -17,13 +17,13 @@ import numpy as np
 import pandas as pd
 
 from . import data, dividends, earnings, edinet, events, jquants, learner, macro, regimes, tdnet
-from .indicators import FEATURES, RAW_FIELDS, compute
+from .indicators import CANDIDATE_FEATURES, FEATURES, RAW_FIELDS, compute
 from .strategies import detect_all, loose_params
 
 log = logging.getLogger(__name__)
-POOL_VERSION = 6
+POOL_VERSION = 7
 FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES + events.EVENT_FEATURES
-                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES))
+                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES + CANDIDATE_FEATURES))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
 RECENT_DAYS = 200    # 毎日計算し直す直近期間（暦日）
 

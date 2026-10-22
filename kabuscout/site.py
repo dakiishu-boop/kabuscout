@@ -12,6 +12,7 @@ import pandas as pd
 
 from . import regimes
 from .config import ROOT
+from .risk import stop_review_threshold
 from .strategies import STRATEGIES
 
 TEMPLATE = Path(__file__).with_name("site_template.html")
@@ -99,7 +100,7 @@ def collect(con, cfg: dict) -> dict:
                     tp_atr=cfg["labeling"]["tp_atr"], sl_atr=cfg["labeling"]["sl_atr"],
                     max_positions=cfg["paper_trading"]["max_positions"], picks_per_day=cfg["paper_trading"]["picks_per_day"],
                     risk_per_trade=cfg["paper_trading"].get("risk_per_trade"),
-                    stop_review_dd=cfg["paper_trading"].get("stop_review_dd"),
+                    stop_review_dd=stop_review_threshold(cfg),
                     stop_mode=cfg["labeling"].get("stop_mode", "intraday"),
                     # 研究ループが採用した、今使っているルール（手元の検証を本番と揃えるためにも公開する）
                     plans=cfg["labeling"].get("per_strategy") or {}, model_params=cfg["learning"].get("model_params"),

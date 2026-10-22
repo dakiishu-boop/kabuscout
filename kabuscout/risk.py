@@ -29,3 +29,16 @@ def tick_size(price):
     p = np.asarray(price, dtype="float64")
     return np.select([p <= 3000, p <= 5000, p <= 30000, p <= 50000, p <= 300000],
                      [1.0, 5.0, 10.0, 50.0, 100.0], default=500.0)
+
+
+def stop_review_threshold(cfg: dict) -> float:
+    """「実際の資金なら売買を止めて見直す」目安の下落率（正の数）。設定値と「過去ペーパートレードの最大下落＋10ポイント」の大きい方。
+    過去の検証の最悪の範囲で止めてしまわないよう、想定外（最悪を大きく超える）になったときだけ出す。"""
+    import json
+    base = float(cfg["paper_trading"].get("stop_review_dd") or 0.35)
+    p = cfg["data"]["db_path"].parent / "backtest.json"
+    try:
+        bt_dd = -float(json.loads(p.read_text())["stats"]["ai"]["max_dd"]) if p.exists() else 0.0
+    except Exception:
+        bt_dd = 0.0
+    return max(base, bt_dd + 0.10)

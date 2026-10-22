@@ -12,7 +12,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .risk import order_shares, tick_size
+from .risk import order_shares, stop_review_threshold, tick_size
 
 log = logging.getLogger(__name__)
 
@@ -169,5 +169,5 @@ def summary(con, cfg: dict, ind: dict | None = None) -> dict:
         open=int(len(opened)), pending=int((pos["status"] == "pending").sum()), closed=int(len(closed)),
         win_rate=float((closed["pnl"] > 0).mean()) if len(closed) else None,
         realized=realized, unrealized=unreal, cash=cash, equity=equity, capital=cap, drawdown=dd,
-        stop_review=bool(pc.get("stop_review_dd") and dd <= -pc["stop_review_dd"]),
+        stop_review=bool(dd <= -stop_review_threshold(cfg)),
     )

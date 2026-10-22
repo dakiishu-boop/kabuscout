@@ -166,6 +166,9 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     crisis = bool(event) or float(ind["stress"].iloc[-1].iloc[0]) > 0.5
     regime = dict(crisis=crisis, event=event or ("市場の急変を自動検知" if crisis else ""))
     pt = paper.step(con, cfg, ind, top, last, crisis=crisis) if cfg["paper_trading"]["enabled"] else None
+    if pt is not None:
+        from . import health
+        pt["health"] = health.check(con, cfg)
     rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
     con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?)", (data_date, json.dumps(rep, ensure_ascii=False, default=float)))
     con.commit()

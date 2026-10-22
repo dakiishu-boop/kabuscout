@@ -13,6 +13,16 @@ MEDALS = ["🥇", "🥈", "🥉"]
 # 含み損込みの評価額が最高値から config の stop_review_dd 以上減ったときの表示（過去の最悪を大きく超える＝想定外）
 STOP_REVIEW = "最高値からの下落が、過去ペーパートレードの最悪を大きく超えました。実際の資金なら売買を止めて見直す目安です"
 
+HEALTH_ICON = {"ok": "✅", "caution": "🟡", "alert": "🔴", "waiting": "⏳", "unknown": "・"}
+
+
+def _health_text(h: dict) -> str:
+    t = f"{HEALTH_ICON.get(h['status'], '')} {h['text']}"
+    if h.get("k"):
+        t += (f"（直近{h['k']}回の合計 {h['live_sum']:+.1%}：過去の同じ回数の中で上位{1 - h['percentile']:.0%}・"
+              f"ふつうは {h['typical']:+.1%}、下位10%は {h['low10']:+.1%}）")
+    return t
+
 def market_stats(ind: dict) -> dict:
     r = {k: float(ind[k].iloc[-1].iloc[0]) for k in ("mkt_dev75", "mkt_ret20", "breadth25")}
     r["mood"] = "強気" if r["mkt_dev75"] > 0 and r["breadth25"] > 0.5 else "弱気" if r["mkt_dev75"] < 0 else "中立"
@@ -117,6 +127,8 @@ def to_markdown(rep: dict) -> str:
                  f"最高値から {pt.get('drawdown', 0):+.1%}）")
         if pt.get("stop_review"):
             L.append(f"  ⚠️ {STOP_REVIEW}")
+        if pt.get("health"):
+            L.append(f"  健康診断: {_health_text(pt['health'])}")
         L += [f"  ・{e}" for e in pt["events"]]
     return "\n".join(L)
 
@@ -168,7 +180,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
                 dict(name="決済", value=f"{pt['closed']}回", inline=True),
                 dict(name="勝率", value=wr, inline=True),
                 dict(name="最高値からの下落", value=f"{pt.get('drawdown', 0):+.1%}", inline=True),
-            ]))
+            ] + ([dict(name="健康診断（過去の想定との比較）", value=_health_text(pt["health"]), inline=False)] if pt.get("health") else [])))
     lines = []
     if rep["model"]:
         mo = rep["model"]

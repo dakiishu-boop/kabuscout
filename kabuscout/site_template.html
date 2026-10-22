@@ -325,6 +325,12 @@ function renderLive(el) {
     <div class="card kpi"><div class="k">含み損益</div><div class="v ${cls(unreal)}">${sgnYen(unreal)}</div><div class="s">保有 ${open.length} / 最大${DATA.config.max_positions}</div></div>
     <div class="card kpi"><div class="k">勝率</div><div class="v">${closed.length ? pct0(wins / closed.length) : "-"}</div><div class="s">${wins}勝 ${closed.length - wins}敗</div></div>
   </div>`;
+  const H = DATA.paper_health;
+  if (H) {
+    const icon = {ok: "✅", caution: "🟡", alert: "🔴", waiting: "⏳"}[H.status] || "・";
+    h += `<div class="card pad" style="margin:10px 0"><b>健康診断（過去ペーパートレードの想定との比較）</b> ${icon} ${esc(H.text)}` +
+      (H.k ? `<div class="small muted">直近${H.k}回の取引の損益の合計 ${pct(H.live_sum)}（過去の同じ回数の連続取引の中で上位${pct0(1 - H.percentile)}）。ふつうは ${pct(H.typical)}、下位10%は ${pct(H.low10)}、下位2.5%は ${pct(H.low025)}。勝率 ${pct0(H.live_win)}（想定 ${pct0(H.exp_win)}）</div>` : "") + `</div>`;
+  }
   const dd = DATA.paper_dd;
   if (dd != null) h += `<p class="small ${DATA.config.stop_review_dd && dd <= -DATA.config.stop_review_dd ? "down" : "muted"}">最高値からの下落（含み損込み）: <b>${pct(dd)}</b>
     ／ 実際の資金なら売買を止めて見直す目安: −${pct0(DATA.config.stop_review_dd)}（過去ペーパートレードの最悪 ${DATA.backtest ? pct0(DATA.backtest.stats.ai.max_dd) : "-"} を大きく超える下落）</p>`;

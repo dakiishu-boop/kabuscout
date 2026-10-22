@@ -288,6 +288,8 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
         crisis_periods=[dict(name=e.name, start=e.start, end=e.end) for e in regimes.EVENTS if e.kind == "crisis"],
     )
     res["gate"] = cfg["paper_trading"].get("gate")
+    from .health import expectation
+    res["expect"] = expectation(ai["trades"])  # 実際のペーパートレードが想定どおりかの判定に使う（health.py）
     (cfg["data"]["db_path"].parent / "backtest.json").write_text(json.dumps(res, ensure_ascii=False))
     res["_preds"], res["_cal"] = preds, cal
     log.info("過去ペーパートレード: 年率 %+.1f%%（ランダム %+.1f%% / 日経平均 %+.1f%%）最大下落 %.1f%%",

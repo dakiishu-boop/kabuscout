@@ -56,6 +56,10 @@ def _sources(cfg: dict) -> dict:
                                                       since=str(ev["date"].min())[:10]))
 
 
+def _without(d: dict | None, key: str) -> dict | None:
+    return None if d is None else {k: v for k, v in d.items() if k != key}
+
+
 def collect(con, cfg: dict) -> dict:
     q = lambda s, p=(): pd.read_sql(s, con, params=p)
     sums = q("SELECT data_date, json FROM summaries ORDER BY data_date DESC LIMIT 60")
@@ -66,6 +70,8 @@ def collect(con, cfg: dict) -> dict:
     cap = cfg["paper_trading"]["capital_jpy"]
     eqs = q("SELECT equity FROM paper_equity WHERE capital=? ORDER BY date", (cap,))["equity"]
     paper_dd = float(eqs.iloc[-1] / max(eqs.max(), cap) - 1) if len(eqs) else None
+    from . import health
+    paper_health = health.check(con, cfg)
     models = q("SELECT version, trained_at, data_end, n_train, metrics, active FROM models ORDER BY version DESC LIMIT 30")
     models["metrics"] = models["metrics"].map(json.loads)
     stats = q("SELECT * FROM strategy_stats WHERE date=(SELECT MAX(date) FROM strategy_stats)")
@@ -81,11 +87,11 @@ def collect(con, cfg: dict) -> dict:
     base = cfg["data"]["db_path"].parent
     load_json = lambda name: json.loads((base / name).read_text()) if (base / name).exists() else None
     return dict(
-        backtest=load_json("backtest.json"), research=load_json("research.json"), events=regimes.events_table(),
+        backtest=_without(load_json("backtest.json"), "expect"), research=load_json("research.json"), events=regimes.events_table(),
         data_sources=_sources(cfg),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
         summaries=summaries, signals=_records(signals), positions=_records(positions),
-        models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd,
+        models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd, paper_health=paper_health,
         strategies={s.key: dict(name=s.name, desc=s.desc) for s in STRATEGIES},
         config=dict(capital=cfg["paper_trading"]["capital_jpy"], horizon=cfg["labeling"]["horizon_days"],
                     tp_atr=cfg["labeling"]["tp_atr"], sl_atr=cfg["labeling"]["sl_atr"],

@@ -27,7 +27,8 @@ from .risk import order_shares
 log = logging.getLogger(__name__)
 
 
-def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[str] | None = None) -> pd.DataFrame:
+def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[str] | None = None,
+                 params: dict | None = None) -> pd.DataFrame:
     """1年ずつ、その年より前のデータだけで本番と同じAI（3つの学習目標）を作って判定する。
     返す ret / label / exit_days は、実際に使う売買ルール（戦略ごと）での結果。"""
     H = learner.plan_horizon(cfg)
@@ -44,7 +45,7 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[st
         te = d[d["date"].dt.year == y]
         if te.empty:
             continue
-        prob, sc = learner.predict(learner.fit_models(tr, cfg, features=features), te)
+        prob, sc = learner.predict(learner.fit_models(tr, cfg, params=params, features=features), te)
         out.append(te.assign(prob=sc, win_prob=prob))
         log.info("  %d年: %d件で学習 → %d件を判定", y, len(tr), len(te))
     pr = pd.concat(out, ignore_index=True)

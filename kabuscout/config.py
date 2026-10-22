@@ -57,4 +57,6 @@ def load_config(path: Path | None = None) -> dict:
             cfg["paper_trading"]["gate"] = saved["gate"]
         if saved.get("portfolio"):  # 研究ループが採用した同時保有数・1日の新規数
             cfg["paper_trading"].update(saved["portfolio"])
+        if saved.get("model_params"):  # 研究ループが採用したAIのモデル設定
+            cfg["learning"]["model_params"] = saved["model_params"]
     return cfg

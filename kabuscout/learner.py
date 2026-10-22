@@ -123,9 +123,14 @@ def with_plan_outcomes(d: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
                     exit_plan=rel["exit_days"].astype(float), complete_plan=rel["complete"].astype(bool))
 
 
+def model_params(cfg: dict) -> dict:
+    """AIのモデル設定。毎週の研究ループで採用された設定があればそれ、無ければ最も正則化の強い設定。"""
+    return cfg["learning"].get("model_params") or CANDIDATES[0]
+
+
 def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features: list[str] | None = None) -> dict:
     """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。features で特徴量を差し替えて比較できる。"""
-    params = params or CANDIDATES[0]
+    params = params or model_params(cfg)
     features = features or MODEL_FEATURES
     X, w = tr[features], _weights(tr, cfg["learning"])
     lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
@@ -313,7 +318,7 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     con.execute("UPDATE models SET active=0")
     con.execute("INSERT OR REPLACE INTO models VALUES (?,?,?,?,?,?,?,1)",
                 (version, datetime.now().isoformat(timespec="seconds"), data_end, len(d),
-                 json.dumps(CANDIDATES[0]), json.dumps(best_met, ensure_ascii=False), str(path)))
+                 json.dumps(model_params(cfg)), json.dumps(best_met, ensure_ascii=False), str(path)))
     con.commit()
     _record_stats(con, cfg, ds, data_end)
     log.info("新モデル v%s 採用: AUC %.3f, %s", version, auc, verdict)

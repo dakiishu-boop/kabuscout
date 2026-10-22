@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from .data import PriceStore
 from . import data, earnings, edinet, flows, jquants, learner, macro, notify, paper, pool, regimes, report, site, tdnet
 from .db import connect
 from .strategies import apply_flags, load_params, plan_for, reasons
@@ -217,10 +218,18 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         log.info("売買ルールを更新: %s → シグナル表を作り直します", summary["plan"]["candidate"])
         pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
     ds = dataset(cfg, pl)
+    ms = None
+    if research:  # AIのモデル設定（正則化の強さ）の研究。勝った設定の過去ペーパートレードの予測をそのまま使う
+        proxy = cfg["universe"]["market_proxy"]
+        cal = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index
+        ms = rs.model_search(con, cfg, ds, cal)
+        if ms["adopted"]:
+            from .config import load_config
+            cfg = load_config()
     if research:  # 週1回は必ず再学習（新旧モデルの対決は train 内で行う）
         log.info("再学習中…" + ("（戦略の条件が更新されたため）" if summary and summary["changed"] else ""))
         learner.train(con, cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
-    bt = backtest.run(cfg, ds)
+    bt = backtest.run(cfg, ds, preds=ms["_preds"] if ms else None)
     if research:  # 地合いによる買い控え（過去ペーパートレードの予測をそのまま使って比較）
         g = rs.gate_search(con, cfg, bt["_preds"], bt["_cal"])
         pf = rs.portfolio_search(con, cfg, bt["_preds"], bt["_cal"])
@@ -228,9 +237,11 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         if rj.exists():
             j = json.loads(rj.read_text())
             j["gate"], j["portfolio"] = g, pf
+            j["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
             rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
         if summary is not None:
             summary["gate"], summary["portfolio"] = g, pf
+            summary["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
         if g["adopted"] or pf["adopted"]:
             from .config import load_config
             cfg = load_config()

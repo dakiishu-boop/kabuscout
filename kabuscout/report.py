@@ -241,6 +241,9 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
             title="🔬 研究ループ: " + (f"{len(adopted)}つの戦略の条件を更新" if adopted else "条件の更新なし（現行が最善 or 改善が偶然の範囲）"),
             url=url or None, color=0x2CA02C if adopted else 0x808080, description="\n".join(lines)[:4000]))
     s = bt["stats"]
+    M = (summary or {}).get("model")
+    if M:
+        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if M['adopted'] else '・'} **AIのモデル設定**（{M['trials']}通り／累計{M['cum_trials']}）: {M['reason']}")[:4000]
     G = (summary or {}).get("gate")
     if G:
         embeds[0]["description"] = (embeds[0]["description"] + f"\n\n{'✅' if G['adopted'] else '・'} **地合いによる買い控え**（{G['trials']}通り／累計{G['cum_trials']}）: {G['reason']}")[:4000]

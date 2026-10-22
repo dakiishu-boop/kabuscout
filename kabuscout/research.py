@@ -496,3 +496,66 @@ def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex)
         saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={"ポートフォリオ": res["candidate"]}))
         p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
     return res
+
+
+def model_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
+    """AIのモデル設定（正則化の強さ）を、過去ペーパートレード全体の年ごとの成績で比べる（安全装置は同じ）。
+    ラウンド9の裏取りで、正則化の弱い設定の方が年率が高く見えたが、何通りか見て一番を選ぶのは選択バイアスなので、
+    ここで多重検定の補正と金庫をかけて判定する。勝った設定の予測を返すので、過去ペーパートレードにそのまま使える。"""
+    from . import backtest
+    rc = cfg["research"]
+    inc = learner.model_params(cfg)
+    variants = [inc] + [p for p in learner.CANDIDATES if p != inc]
+    vault_start = cal[-rc["vault_days"]]
+    rows = []
+    for p in variants:
+        pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=p)
+        pr = backtest.with_sectors(backtest.with_stops(pr[pr["complete"]], cfg), cfg)
+        eq = backtest.simulate(pr, cal[cal >= pr["date"].min()], cfg, "ai")["equity"]
+        s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
+        yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
+                        for y, g in s_.groupby(s_.index.year)})
+        rows.append(dict(p=p, preds=pr, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1)))
+        log.info("  モデル設定 葉%d・最小%d: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", p["max_leaf_nodes"], p["min_samples_leaf"],
+                 rows[-1]["stats"]["cagr"] * 100, rows[-1]["stats"]["max_dd"] * 100, rows[-1]["vault"] * 100)
+    inc_row = rows[0]
+    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy='_model'").fetchone()[0]
+    cum = int(prev + len(variants) - 1)
+    t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
+    best, t_best = None, -9.0
+    for r in rows[1:]:
+        d = (r["yearly"] - inc_row["yearly"]).dropna()
+        r["t"] = float(d.mean() / (d.std(ddof=1) / np.sqrt(len(d)))) if len(d) >= 3 and d.std(ddof=1) > 0 else None
+        if r["t"] is not None and r["t"] > t_best:
+            best, t_best = r, r["t"]
+    name = lambda p: f"葉{p['max_leaf_nodes']}・最小{p['min_samples_leaf']}件・学習率{p['learning_rate']}"
+    res = dict(incumbent=name(inc), trials=len(variants) - 1, cum_trials=cum, t_needed=t_needed, adopted=False,
+               table=[dict(name=name(r["p"]), cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"],
+                           t=r.get("t")) for r in rows])
+    winner = inc_row
+    if best is None or t_best < t_needed:
+        res["reason"] = (f"最有力「{name(best['p'])}」も改善が偶然の範囲（t={t_best:.2f} < 必要{t_needed:.2f}）" if best else "候補なし")
+    elif best["vault"] < inc_row["vault"]:
+        res["reason"] = f"最有力「{name(best['p'])}」は金庫期間で現行に負け（{best['vault']:+.1%} vs {inc_row['vault']:+.1%}）"
+    elif best["stats"]["max_dd"] < inc_row["stats"]["max_dd"] - 0.05:
+        res["reason"] = f"最有力「{name(best['p'])}」は最大下落が大きく悪化（{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}）"
+    else:
+        winner = best
+        res.update(adopted=True, candidate=best["p"],
+                   reason=f"採用「{name(best['p'])}」: 年率 {inc_row['stats']['cagr']:+.1%}→{best['stats']['cagr']:+.1%}、最大下落 "
+                          f"{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}、金庫でも {inc_row['vault']:+.1%}→{best['vault']:+.1%}")
+    log.info("  AIのモデル設定: %d通り（累計%d）→ %s", len(variants) - 1, cum, res["reason"])
+    con.execute("INSERT INTO research_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        datetime.now().isoformat(timespec="seconds"), "_model", len(variants) - 1, cum, json.dumps(inc),
+        json.dumps(res.get("candidate")), inc_row["stats"]["cagr"], best["stats"]["cagr"] if best else None,
+        t_best, t_needed, inc_row["vault"], best["vault"] if best else None, 0, 0, int(res["adopted"]), res["reason"]))
+    con.commit()
+    if res["adopted"]:
+        from .pipeline import params_path
+        p = params_path(cfg)
+        saved = json.loads(p.read_text()) if p.exists() else {}
+        saved["model_params"] = res["candidate"]
+        saved.setdefault("history", []).append(dict(at=datetime.now().isoformat(timespec="seconds"), adopted={"AIのモデル設定": res["candidate"]}))
+        p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
+    res["_preds"] = winner["preds"]
+    return res

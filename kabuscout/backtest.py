@@ -138,6 +138,9 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
     株数の決め方は risk.order_shares（本番のペーパートレードと同じ）。account で資金などを差し替えて比較できる。"""
     pc, rc = cfg["paper_trading"], cfg["research"]
     acc = {**pc, **(account or {})}
+    if "capital_jpy" not in (account or {}):  # コア（指数）を持つ設定なら、AIで運用するのは残りの資金
+        from .core import ai_capital
+        acc["capital_jpy"] = ai_capital(cfg)
     cap, half_cost = acc["capital_jpy"], rc["cost"] / 2
     maxp = max_positions or pc["max_positions"]
     per_day = picks_per_day or pc["picks_per_day"]
@@ -331,6 +334,16 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
     )
     res["gate"] = cfg["paper_trading"].get("gate")
     res["outlook"] = outlook(eq)
+    try:  # 参考: 資金の一部（設定が無ければ30%）を指数に固定し、残りをAIで運用した場合
+        from . import core
+        ix = core.load_indices(cfg)
+        if ix is not None:
+            sh = core.share(cfg) or 0.3
+            R = core.index_returns_jpy(ix, eq.index)
+            res["core"] = dict(share=sh, active=core.share(cfg) > 0, rows=[
+                dict(name=k, stats=_stats(core.combined(eq, R[k], sh)), alone=_stats((1 + R[k]).cumprod())) for k in R])
+    except Exception as e:
+        log.warning("指数との組み合わせの計算に失敗: %s", e)
     from .health import expectation
     res["expect"] = expectation(ai["trades"])  # 実際のペーパートレードが想定どおりかの判定に使う（health.py）
     (cfg["data"]["db_path"].parent / "backtest.json").write_text(json.dumps(res, ensure_ascii=False))

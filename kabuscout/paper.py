@@ -44,7 +44,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
     k_tp, k_sl = cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"]
     half_cost = cfg["research"]["cost"] / 2
     idx = ind["close"].index
-    events = _restart_if_capital_changed(con, pc["capital_jpy"])
+    from .core import ai_capital
+    events = _restart_if_capital_changed(con, ai_capital(cfg))
     st = summary(con, cfg, ind)
     equity, cash = st["equity"], st["cash"]
     slot = equity / pc["max_positions"]
@@ -122,12 +123,12 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
             con.execute("INSERT INTO paper_positions(code,name,signal_date,status,atr,prob,tp_atr,sl_atr,horizon,capital) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (r["code"], r["name"], data_date.strftime("%Y-%m-%d"), "pending", float(r["atr"]),
                          None if pd.isna(r["prob"]) else float(r["prob"]), float(r.get("tp_atr", k_tp)),
-                         float(r.get("sl_atr", k_sl)), int(r.get("horizon", H)), pc["capital_jpy"]))
+                         float(r.get("sl_atr", k_sl)), int(r.get("horizon", H)), ai_capital(cfg)))
             events.append(f"注文 {r['code']} {r['name']} (翌寄付)")
     con.commit()
     st = summary(con, cfg, ind)
     con.execute("INSERT OR REPLACE INTO paper_equity VALUES (?,?,?)",
-                (data_date.strftime("%Y-%m-%d"), st["equity"], pc["capital_jpy"]))
+                (data_date.strftime("%Y-%m-%d"), st["equity"], ai_capital(cfg)))
     con.commit()
     return summary(con, cfg, ind) | {"events": events}
 
@@ -147,7 +148,8 @@ def _restart_if_capital_changed(con, capital: float) -> list[str]:
 
 def summary(con, cfg: dict, ind: dict | None = None) -> dict:
     pc = cfg["paper_trading"]
-    cap, half_cost = pc["capital_jpy"], cfg["research"]["cost"] / 2
+    from .core import ai_capital
+    cap, half_cost = ai_capital(cfg), cfg["research"]["cost"] / 2
     pos = pd.read_sql("SELECT * FROM paper_positions WHERE status!='archived'", con)
     closed = pos[pos["status"] == "closed"]
     opened = pos[pos["status"] == "open"]

@@ -129,6 +129,9 @@ def to_markdown(rep: dict) -> str:
             L.append(f"  ⚠️ {STOP_REVIEW}")
         if pt.get("health"):
             L.append(f"  健康診断: {_health_text(pt['health'])}")
+        if pt.get("core"):
+            c = pt["core"]
+            L.append(f"  指数（{c['name']}）: {c['value']:,.0f}円（{c['ret']:+.1%}） → 合計 {pt['equity'] + c['value']:,.0f}円")
         L += [f"  ・{e}" for e in pt["events"]]
     return "\n".join(L)
 
@@ -180,7 +183,8 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
                 dict(name="決済", value=f"{pt['closed']}回", inline=True),
                 dict(name="勝率", value=wr, inline=True),
                 dict(name="最高値からの下落", value=f"{pt.get('drawdown', 0):+.1%}", inline=True),
-            ] + ([dict(name="健康診断（過去の想定との比較）", value=_health_text(pt["health"]), inline=False)] if pt.get("health") else [])))
+            ] + ([dict(name="健康診断（過去の想定との比較）", value=_health_text(pt["health"]), inline=False)] if pt.get("health") else [])
+              + ([dict(name=f"指数の部分（{pt['core']['name']}）", value=f"{pt['core']['value']:,.0f}円（{pt['core']['ret']:+.1%}）／合計 {pt['equity'] + pt['core']['value']:,.0f}円", inline=False)] if pt.get("core") else [])))
     lines = []
     if rep["model"]:
         mo = rep["model"]

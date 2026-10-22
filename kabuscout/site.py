@@ -72,6 +72,8 @@ def collect(con, cfg: dict) -> dict:
     paper_dd = float(eqs.iloc[-1] / max(eqs.max(), cap) - 1) if len(eqs) else None
     from . import health
     paper_health = health.check(con, cfg)
+    core_p = cfg["data"]["db_path"].parent / "core.json"
+    core_state = json.loads(core_p.read_text()) if core_p.exists() and float((cfg["paper_trading"].get("core") or {}).get("share") or 0) > 0 else None
     models = q("SELECT version, trained_at, data_end, n_train, metrics, active FROM models ORDER BY version DESC LIMIT 30")
     models["metrics"] = models["metrics"].map(json.loads)
     stats = q("SELECT * FROM strategy_stats WHERE date=(SELECT MAX(date) FROM strategy_stats)")
@@ -91,7 +93,7 @@ def collect(con, cfg: dict) -> dict:
         data_sources=_sources(cfg),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
         summaries=summaries, signals=_records(signals), positions=_records(positions),
-        models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd, paper_health=paper_health,
+        models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd, paper_health=paper_health, core_state=core_state,
         strategies={s.key: dict(name=s.name, desc=s.desc) for s in STRATEGIES},
         config=dict(capital=cfg["paper_trading"]["capital_jpy"], horizon=cfg["labeling"]["horizon_days"],
                     tp_atr=cfg["labeling"]["tp_atr"], sl_atr=cfg["labeling"]["sl_atr"],

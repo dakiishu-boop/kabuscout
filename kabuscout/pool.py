@@ -21,7 +21,7 @@ from .indicators import CANDIDATE_FEATURES, FEATURES, RAW_FIELDS, compute
 from .strategies import detect_all, loose_params
 
 log = logging.getLogger(__name__)
-POOL_VERSION = 9
+POOL_VERSION = 10
 FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES + events.EVENT_FEATURES
                             + dividends.DIV_FEATURES + edinet.FIN_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES + CANDIDATE_FEATURES))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
@@ -64,6 +64,8 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     tv = (panel["close"] * panel["volume"]).rolling(20, min_periods=10).mean().max()
     keep = [c for c in panel["close"].columns if tv.get(c, 0) >= cfg["universe"]["min_turnover_jpy"] or c == proxy]
     panel = {k: v[keep].astype("float32") for k, v in panel.items()}
+    if hasattr(store, "split_factor"):
+        panel["split_factor"] = store.split_factor(panel["close"].index, panel["close"].columns)
 
     ind = compute(panel, proxy, uni.set_index("code")["sector33"])
     td = tdnet.load(cfg)
@@ -77,7 +79,7 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     ind = {k: v.astype("float32") for k, v in ind.items()}
     in_uni = pd.Series([c in set(codes) for c in ind["close"].columns], index=ind["close"].columns)
     mask = ((ind["turnover"] >= cfg["universe"]["min_turnover_jpy"])
-            & (ind["close"] >= cfg["universe"]["min_price"])) & in_uni
+            & (ind["px_actual"] >= cfg["universe"]["min_price"])) & in_uni
     sigs = detect_all(ind, mask, loose_params())
     any_sig = None
     for m in sigs.values():

@@ -266,14 +266,16 @@ def plan_search(con, cfg: dict, pl: pd.DataFrame, params: dict, vault_start, rng
 
     sig = apply_flags(pl, params)[["date", "code", "atr", "crisis"] + [f"s_{s.key}" for s in STRATEGIES]]
     codes = sorted(sig["code"].unique())
-    px = PriceStore(cfg["data"]["price_dir"]).load(codes=codes)
+    store = PriceStore(cfg["data"]["price_dir"])
+    px = store.load(codes=codes)
     c = px["close"].ffill(limit=5)
     o, h, l = (px[k].fillna(c) for k in ("open", "high", "low"))
+    fac = store.split_factor(c.index, c.columns).to_numpy()
     tix = {d: i for i, d in enumerate(c.index)}
     cix = {k: i for i, k in enumerate(c.columns)}
     sig = sig[sig["date"].map(tix).notna() & sig["code"].map(cix).notna()].reset_index(drop=True)
     paths = learner.forward_paths(*(x.to_numpy("float32") for x in (o, h, l, c)),
-                                  sig["date"].map(tix).to_numpy(int), sig["code"].map(cix).to_numpy(int), Hmax)
+                                  sig["date"].map(tix).to_numpy(int), sig["code"].map(cix).to_numpy(int), Hmax, fac=fac)
     del px, c, o, h, l
 
     dates = np.array(sorted(sig["date"].unique()))

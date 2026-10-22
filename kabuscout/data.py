@@ -23,8 +23,10 @@ log = logging.getLogger(__name__)
 
 JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
 FIELDS = ["open", "high", "low", "close", "volume"]
-# 株価と一緒に取得・保存する項目（配当は権利落ち日に1株あたり配当額、分割調整済み）
-STORE_FIELDS = FIELDS + ["dividends"]
+# 株価と一緒に取得・保存する項目（配当は権利落ち日に1株あたり配当額、分割調整済み。分割は分割日に分割比率、無い日は0）
+STORE_FIELDS = FIELDS + ["dividends", "splits"]
+_YF_NAME = {"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume",
+            "dividends": "Dividends", "splits": "Stock Splits"}
 
 
 # ---------------------------------------------------------------- universe
@@ -127,9 +129,42 @@ class PriceStore:
             df = df[df.index <= pd.Timestamp(end)]
         return df
 
+    def _raw(self, f: str) -> pd.DataFrame:
+        if not self._path(f).exists():
+            return pd.DataFrame()
+        df = pd.read_parquet(self._path(f))
+        df.index = pd.to_datetime(df.index)
+        return df
+
+    def has_splits(self) -> bool:
+        return self._path("splits").exists()
+
+    def split_factor(self, index: pd.DatetimeIndex, codes) -> pd.DataFrame:
+        """分割調整済みの株価を「その日の実際の株価」に戻す倍率（その日より後に起きた分割の比率の積）。
+        Yahoo の株価は過去にさかのぼって分割調整されているので、後で分割した銘柄の古い株価は実際より低く見える
+        （例: 2023年に25分割したNTTの2015年の株価は、実際の1/25に見える）。呼値の単位・株価の水準・最低株価の判定に使う。"""
+        cols = list(codes)
+        out = pd.DataFrame(1.0, index=index, columns=cols)
+        if not self.has_splits():
+            return out
+        have = set(pq.read_schema(self._path("splits")).names)
+        sp = pd.read_parquet(self._path("splits"), columns=[c for c in cols if c in have])
+        sp.index = pd.to_datetime(sp.index)
+        sp = sp.where(sp > 0)
+        for c in sp.columns:
+            ev = sp[c].dropna()
+            ev = ev[(ev > 0) & (ev != 1)]
+            if ev.empty:
+                continue
+            f = pd.Series(1.0, index=index)
+            for d, ratio in ev.items():
+                f[index < d] *= float(ratio)  # 分割日より前の日は、実際の株価 = 調整後 × 比率
+            out[c] = f.to_numpy()
+        return out
+
     def save(self, panel: dict) -> None:
         for f in STORE_FIELDS:
-            if f not in panel or panel[f] is None or (f == "dividends" and panel[f].empty):
+            if f not in panel or panel[f] is None or (f in ("dividends", "splits") and panel[f].empty):
                 continue
             df = panel[f].sort_index()
             df.index.name = "date"
@@ -141,7 +176,8 @@ class PriceStore:
         if not new or new["close"].empty:
             return
         old = self.load(clean=False)
-        old["dividends"] = self.load_dividends()
+        for f in ("dividends", "splits"):  # 生のまま（読み込み時の補正をかけずに）引き継ぐ
+            old[f] = self._raw(f)
         merged = {}
         for f in STORE_FIELDS:
             n = new.get(f, pd.DataFrame())
@@ -176,7 +212,7 @@ def _wide(raw: pd.DataFrame, codes: list[str]) -> dict:
     raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
     for f in STORE_FIELDS:
         try:
-            w = raw.xs(f.capitalize(), axis=1, level=1)
+            w = raw.xs(_YF_NAME[f], axis=1, level=1)
         except KeyError:
             continue
         w.columns = [str(c).replace(".T", "") for c in w.columns]
@@ -231,9 +267,9 @@ def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
     # データが1本も無い銘柄（新規上場直後など）は週1回だけ取り直す
     fresh = [c for c in codes if (c not in last and not recently_tried(c))
              or (c in last and (last[c] < cutoff or meta.get(c, "9999") > hstart))]
-    if not store.load_dividends(codes=["7203"]).shape[1] and last:
-        # 配当データを持っていない旧形式の保存データ → 一度だけ全期間を取り直して配当も揃える
-        log.info("配当データを揃えるため、全銘柄の全期間を取り直します（初回のみ）")
+    if last and (not store.load_dividends(codes=["7203"]).shape[1] or not store.has_splits()):
+        # 配当・分割のデータを持っていない旧形式の保存データ → 一度だけ全期間を取り直して揃える
+        log.info("配当・分割のデータを揃えるため、全銘柄の全期間を取り直します（初回のみ）")
         fresh = [c for c in codes if c in last or not recently_tried(c)]
     incremental = [c for c in codes if c in last and c not in set(fresh)]
 

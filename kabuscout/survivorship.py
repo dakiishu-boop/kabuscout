@@ -88,6 +88,11 @@ class _StoreWithDelisted:
                 p[k] = p[k].join(self.extra[k][add].reindex(p[k].index), how="left")
         return p
 
+    def split_factor(self, index, codes):
+        own = [c for c in codes if c not in self.codes]
+        f = self.store.split_factor(index, own)
+        return f.reindex(columns=list(codes)).fillna(1.0)  # 上場廃止銘柄は J-Quants の調整済み株価なので倍率1とみなす
+
     def load_dividends(self, start=None, end=None, codes=None):
         return self.store.load_dividends(start=start, end=end, codes=None if codes is None else [c for c in codes if c not in self.codes])
 

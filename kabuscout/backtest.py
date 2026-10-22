@@ -67,8 +67,10 @@ def apply_plans(preds: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
     todo = preds[preds["_plan"] != glob]
     if todo.empty:
         return preds.drop(columns="_plan")
-    px = (store or PriceStore(cfg["data"]["price_dir"])).load(codes=sorted(todo["code"].unique()))
+    st = store or PriceStore(cfg["data"]["price_dir"])
+    px = st.load(codes=sorted(todo["code"].unique()))
     c = px["close"].ffill(limit=5)
+    fac = st.split_factor(c.index, c.columns).to_numpy() if hasattr(st, "split_factor") else None
     o, h, l = (px[k].fillna(c) for k in ("open", "high", "low"))
     tix = {d: i for i, d in enumerate(c.index)}
     cix = {k: i for i, k in enumerate(c.columns)}
@@ -77,7 +79,7 @@ def apply_plans(preds: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
     # 新しい pandas は型の違う値の書き込みを拒否するので、書き込む列の型を先に揃える
     preds = preds.astype({"ret": "float64", "exit_days": "float64", "label": "float64", "complete": "bool"})
     for (kt, ks, hz), g in todo.groupby("_plan"):
-        p = learner.forward_paths(*arrs, g["date"].map(tix).to_numpy(int), g["code"].map(cix).to_numpy(int), int(hz))
+        p = learner.forward_paths(*arrs, g["date"].map(tix).to_numpy(int), g["code"].map(cix).to_numpy(int), int(hz), fac=fac)
         r = learner.outcomes(p, g["atr"].to_numpy(float), kt, ks, int(hz))
         preds.loc[g.index, "ret"] = np.asarray(r["ret"], dtype="float64")
         preds.loc[g.index, "label"] = np.asarray(r["label"], dtype="float64")

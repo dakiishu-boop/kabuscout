@@ -28,7 +28,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -62,6 +62,11 @@ def main(argv=None):
         run_research(cfg, research=a.command == "research", trials=a.trials, budget_min=a.budget_min,
                      notify_on=not a.no_notify, collect=not a.no_collect)
 
+    elif a.command == "prices":  # 株価・配当・分割の取得だけ（分割の履歴を揃えるときなど、全期間の取り直しを毎日の実行とは別に済ませる）
+        from .pipeline import store_of
+        con = connect(cfg["data"]["db_path"])
+        uni = data.refresh_universe(con, cfg)
+        data.update_prices(store_of(cfg), uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
     elif a.command == "tdnet":  # 適時開示の過去分の取得だけ（決算好反応の判定に必要。クラウドの初回の取得を早く済ませる）
         from . import tdnet
         tdnet.update(cfg, max_minutes=a.budget_min or 60)
@@ -85,7 +90,7 @@ def main(argv=None):
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
-    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train", "evaluate-edinet"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
+    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train", "evaluate-edinet", "prices"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
         from . import site
         site.build(connect(cfg["data"]["db_path"]), cfg)
 

@@ -106,7 +106,12 @@ def compute(panel: dict[str, pd.DataFrame], market_code: str,
     turnover = (c * v).rolling(20, min_periods=10).mean()
     ind["turnover"] = turnover
     ind["turnover_log"] = np.log10(turnover.clip(lower=1))
-    ind["price_log"] = np.log10(c.clip(lower=1))
+    # 株価の水準・最低株価の判定は「その日の実際の株価」で（分割調整後の古い株価は実際より低く見えるため）
+    fac = panel.get("split_factor")
+    px = c * fac.reindex(index=c.index, columns=c.columns).fillna(1.0) if fac is not None else c
+    ind["split_factor"] = (px / c).fillna(1.0) if fac is not None else c * 0 + 1.0
+    ind["px_actual"] = px
+    ind["price_log"] = np.log10(px.clip(lower=1))
 
     high52 = h.rolling(250, min_periods=120).max()
     ind["prior_high52"] = h.shift(1).rolling(250, min_periods=120).max()

@@ -52,7 +52,7 @@ CANDIDATES = [
 
 
 # ---------------------------------------------------------------- labels
-def forward_paths(o, h, l, c, ti, ci, H: int) -> dict:
+def forward_paths(o, h, l, c, ti, ci, H: int, fac=None) -> dict:
     """各シグナルの「翌日寄付き(エントリー)」と、その後 H 日分の四本値をまとめて取り出す。
     売買ルールを何通り試しても、この表を使い回せば価格データを読み直さずに済む。"""
     T = o.shape[0]
@@ -64,7 +64,10 @@ def forward_paths(o, h, l, c, ti, ci, H: int) -> dict:
         ii = np.minimum(idx, T - 1)
         for arr, src in ((fo, o), (fh, h), (fl, l), (fc, c)):
             arr[k - 1] = np.where(ok, src[ii, ci], np.nan)
-    return dict(entry=entry, o=fo, h=fh, l=fl, c=fc)
+    out = dict(entry=entry, o=fo, h=fh, l=fl, c=fc)
+    if fac is not None:  # エントリー日の「実際の株価 ÷ 分割調整後の株価」（呼値の単位を実際の株価で決めるため）
+        out["fac"] = np.where(ti + 1 < T, fac[np.minimum(ti + 1, T - 1), ci], 1.0)
+    return out
 
 
 def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
@@ -76,7 +79,10 @@ def outcomes(p: dict, atr: np.ndarray, k_tp: float, k_sl: float, H: int):
     entry = p["entry"]
     n = len(entry)
     tp, sl = entry + k_tp * atr, entry - k_sl * atr
-    slip = tick_size(np.nan_to_num(entry, nan=1000.0))
+    fac = p.get("fac")
+    fac = np.ones(n) if fac is None else np.nan_to_num(np.asarray(fac, dtype="float64"), nan=1.0)
+    # 呼値は「その日の実際の株価」で決まる（分割調整後の株価は、後で分割した銘柄では実際より低い）
+    slip = tick_size(np.nan_to_num(entry, nan=1000.0) * fac) / fac
     done = np.zeros(n, bool)
     lab = np.zeros(n, dtype="int8")
     exit_px = np.full(n, np.nan)
@@ -103,7 +109,8 @@ def label(ind: dict, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """現在の売買ルールでラベル付け。complete=False は結果確定前。"""
     H = cfg["labeling"]["horizon_days"]
     o, h, l, c = (ind[k].to_numpy() for k in ("open", "high", "low", "close"))
-    p = forward_paths(o, h, l, c, df["_ti"].to_numpy(), df["_ci"].to_numpy(), H)
+    fac = ind["split_factor"].to_numpy() if "split_factor" in ind else None
+    p = forward_paths(o, h, l, c, df["_ti"].to_numpy(), df["_ci"].to_numpy(), H, fac=fac)
     r = outcomes(p, df["atr"].to_numpy(), cfg["labeling"]["tp_atr"], cfg["labeling"]["sl_atr"], H)
     df = df.copy()
     for k in ("entry", "tp", "sl", "label", "ret", "exit_days", "complete"):

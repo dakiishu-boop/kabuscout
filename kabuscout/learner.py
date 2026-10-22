@@ -30,13 +30,14 @@ from .earnings import EARN_FEATURES
 from .edinet import FIN_FEATURES
 from .events import EVENT_FEATURES
 from .indicators import FEATURES
+from .macro import MODEL_MACRO_FEATURES
 from .strategies import FLAG_COLS, STRATEGIES
 
 log = logging.getLogger(__name__)
 # 地合い系（全銘柄共通の値）は特定の時期の丸暗記を招き、検証で成績が不安定になったため
 # 銘柄スコアのモデルからは外す（地合いは通知文と戦略の重みで扱う）
 MARKET_FEATURES = ["mkt_dev75", "mkt_ret5", "mkt_ret20", "mkt_vol20", "breadth25", "sector_mom20"]
-MODEL_FEATURES = [f for f in FEATURES if f not in MARKET_FEATURES] + EARN_FEATURES + EVENT_FEATURES + DIV_FEATURES + FIN_FEATURES + FLAG_COLS + ["n_strat"]
+MODEL_FEATURES = [f for f in FEATURES if f not in MARKET_FEATURES] + EARN_FEATURES + EVENT_FEATURES + DIV_FEATURES + FIN_FEATURES + MODEL_MACRO_FEATURES + FLAG_COLS + ["n_strat"]
 
 # 強めの正則化ほど期間をまたいで安定した（実験結果）
 CANDIDATES = [

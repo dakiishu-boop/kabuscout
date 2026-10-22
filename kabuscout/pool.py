@@ -16,14 +16,14 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import data, dividends, earnings, edinet, events, learner, regimes, tdnet
+from . import data, dividends, earnings, edinet, events, learner, macro, regimes, tdnet
 from .indicators import FEATURES, RAW_FIELDS, compute
 from .strategies import detect_all, loose_params
 
 log = logging.getLogger(__name__)
-POOL_VERSION = 4
+POOL_VERSION = 5
 FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES + events.EVENT_FEATURES
-                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES))
+                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + macro.MACRO_FEATURES))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
 RECENT_DAYS = 200    # 毎日計算し直す直近期間（暦日）
 
@@ -72,6 +72,7 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     ind.update(events.wide_features(td, ind["close"]))
     ind.update(dividends.wide_features(store.load_dividends(codes=list(ind["close"].columns)), ind["close"]))
     ind.update(edinet.wide_features(edinet.load(cfg), ind["close"]))
+    ind.update(macro.wide_features(macro.load(cfg), ind["close"]))
     ind = {k: v.astype("float32") for k, v in ind.items()}
     in_uni = pd.Series([c in set(codes) for c in ind["close"].columns], index=ind["close"].columns)
     mask = ((ind["turnover"] >= cfg["universe"]["min_turnover_jpy"])

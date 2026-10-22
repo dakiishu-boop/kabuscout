@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from . import data, earnings, edinet, flows, learner, notify, paper, pool, regimes, report, site, tdnet
+from . import data, earnings, edinet, flows, learner, macro, notify, paper, pool, regimes, report, site, tdnet
 from .db import connect
 from .strategies import apply_flags, load_params, plan_for, reasons
 
@@ -111,6 +111,10 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     proxy = cfg["universe"]["market_proxy"]
     data.update_prices(store, uni["code"].tolist() + [proxy], cfg)
     _drop_legacy_prices(con)
+    try:  # 海外市場・為替（数秒）。その日の候補の「追い風/向かい風」に使うので、スクリーニングの前に更新
+        macro.update(cfg)
+    except Exception as e:
+        log.warning("海外市場・為替の更新に失敗（前回の値で続行）: %s", e)
 
     cutoff = _usable_date(store, _cutoff())
     data_date = cutoff.strftime("%Y-%m-%d")
@@ -154,7 +158,7 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     top["earnings_days"] = [(_earnings_days(c, last) if i < n_e else np.nan) for i, c in enumerate(top["code"])]
     top["rank"] = range(1, len(top) + 1)
     snap = flows.snapshot(cfg)
-    for col in ("margin_ratio", "buy_pct", "sell_pct", "buy_pct_chg5", "short_total"):
+    for col in ("margin_ratio", "buy_pct", "sell_pct", "buy_pct_chg5", "short_total", "lending_fee"):
         top[col] = top["code"].map(snap[col]) if col in snap else np.nan
     _store_live(con, top, data_date)
     _label_live(con, ds)
@@ -187,6 +191,7 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     if research:  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
         uni = data.refresh_universe(con, cfg)
         data.update_prices(store_of(cfg), uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
+        macro.update(cfg)
         for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=60)),
                          ("適時開示", lambda: tdnet.update(cfg, max_minutes=120)),
                          ("財務データ", lambda: edinet.update(cfg, max_minutes=90))):

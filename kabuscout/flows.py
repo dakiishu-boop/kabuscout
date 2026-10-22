@@ -105,15 +105,40 @@ def collect_shorts(cfg: dict) -> int:
     return len(added)
 
 
+LENDING_PAGE = BASE + "/markets/statistics-equities/margin/02.html"
+
+
+def collect_lending(cfg: dict) -> int:
+    """品貸料（逆日歩）: 貸し出す株が足りないときに売り方が払う費用。空売りが溜まり、踏み上げが起きやすい合図。
+    JPX には最新の1日分しか無いので、毎日貯める。"""
+    path = _dir(cfg) / "lending.parquet"
+    old = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+    href = next(iter(_links(LENDING_PAGE, r"Premium_Charges\.xlsx")), None)
+    if not href:
+        return 0
+    x = pd.read_excel(io.BytesIO(requests.get(BASE + href, timeout=60).content), header=None).iloc[3:, [0, 1, 4, 5, 6]]
+    x.columns = ["date", "code", "excess", "max_rate", "rate"]
+    x = x.dropna(subset=["code"])
+    x["date"] = pd.to_datetime(x["date"].astype(str), format="%Y%m%d", errors="coerce")
+    x["code"] = x["code"].astype(str).str.strip().str[:4]
+    for c in ("excess", "max_rate", "rate"):
+        x[c] = pd.to_numeric(x[c], errors="coerce")  # "*****" = 品貸料なし → 空欄
+    x = x.dropna(subset=["date"])
+    if len(old) and x["date"].iloc[0] in set(old["date"]):
+        return 0
+    pd.concat([old, x], ignore_index=True).to_parquet(path)
+    return 1
+
+
 def collect(cfg: dict) -> dict:
     out = {}
-    for name, fn in (("margin", collect_margin), ("shorts", collect_shorts)):
+    for name, fn in (("margin", collect_margin), ("shorts", collect_shorts), ("lending", collect_lending)):
         try:
             out[name] = fn(cfg)
         except Exception as e:
             log.warning("需給データの収集に失敗（%s）: %s", name, e)
             out[name] = 0
-    log.info("需給データを収集: 信用残 %d日分 / 空売り残高 %dファイル 追加", out["margin"], out["shorts"])
+    log.info("需給データを収集: 信用残 %d日分 / 空売り残高 %dファイル / 品貸料 %d日分 追加", out["margin"], out["shorts"], out["lending"])
     return out
 
 
@@ -137,6 +162,10 @@ def snapshot(cfg: dict) -> pd.DataFrame:
         cur = cur[cur["ratio"] > 0]
         agg = cur.groupby("code").agg(short_total=("ratio", "sum"), short_filers=("filer", "nunique"))
         out = out.join(agg, how="outer")
+    if (d / "lending.parquet").exists():
+        lp = pd.read_parquet(d / "lending.parquet")
+        last = lp[lp["date"] == lp["date"].max()].set_index("code")
+        out = out.join(last[["rate"]].rename(columns={"rate": "lending_fee"}), how="outer")
     return out
 
 
@@ -144,4 +173,5 @@ def history_days(cfg: dict) -> dict:
     d = _dir(cfg)
     m = pd.read_parquet(d / "margin.parquet")["date"].nunique() if (d / "margin.parquet").exists() else 0
     s = pd.read_parquet(d / "short_reports.parquet")["file"].nunique() if (d / "short_reports.parquet").exists() else 0
-    return dict(margin_days=int(m), short_files=int(s))
+    lend = pd.read_parquet(d / "lending.parquet")["date"].nunique() if (d / "lending.parquet").exists() else 0
+    return dict(margin_days=int(m), short_files=int(s), lending_days=int(lend))

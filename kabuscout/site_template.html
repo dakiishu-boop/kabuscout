@@ -490,6 +490,8 @@ function renderAI() {
     <tr><td><b>適時開示</b></td><td class="small" style="white-space:normal">${DS.tdnet ? `TDnet（有志の無料API）・${esc(DS.tdnet.since.slice(0, 4))}年〜・${DS.tdnet.rows.toLocaleString()}件（決算短信 ${(DS.tdnet.counts.earnings || 0).toLocaleString()}・自社株買い ${(DS.tdnet.counts.buyback || 0).toLocaleString()}・上方修正 ${(DS.tdnet.counts.forecast_up || 0).toLocaleString()} など）。全銘柄の決算日の補完と、イベント後の値動きに使用` : "取得中"}</td></tr>
     <tr><td><b>配当</b></td><td class="small" style="white-space:normal">Yahoo Finance・2002年〜・全銘柄。配当利回り・増配率・次の権利落ち日（1年前の暦の上で推定）。売買成績に受け取り配当は含めていません（保守的）</td></tr>
     <tr><td><b>信用残</b></td><td class="small" style="white-space:normal">JPX 日々の銘柄別信用取引残高・<b>${DS.flows.margin_days}日分を蓄積</b>。JPXには直近数日分しか無いため毎日集めて貯めています。約250日分たまったらAIの検証に加えます（それまでは候補の参考表示のみ）</td></tr>
+    <tr><td><b>海外・為替</b></td><td class="small" style="white-space:normal">Yahoo Finance・2002年〜（ドル円・S&P500・SOX・原油・米10年金利）。銘柄ごとの感応度×直近の動き＝追い風/向かい風。AIには原油と金利だけを使用（全部使うと成績が悪化したため）</td></tr>
+    <tr><td><b>品貸料（逆日歩）</b></td><td class="small" style="white-space:normal">JPX・<b>${DS.flows.lending_days || 0}日分を蓄積</b>。空売りが溜まった銘柄の目安。候補の参考表示のみ</td></tr>
     <tr><td><b>空売り残高</b></td><td class="small" style="white-space:normal">JPX 空売り残高報告（0.5%以上の大口）・<b>${DS.flows.short_files}日分を蓄積</b>。同上</td></tr>
   </tbody></table></div>`;
   h += `<h2>考慮している世の中の出来事</h2><div class="card pad"><ul class="timeline">` +

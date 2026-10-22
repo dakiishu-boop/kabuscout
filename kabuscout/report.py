@@ -74,6 +74,8 @@ def _flows_text(r) -> str:
         parts.append(f"買残 上場比{g('buy_pct'):.1%}" + (f"（1週間で{chg:+.1%}）" if chg else ""))
     if g("short_total") is not None:
         parts.append(f"大口空売り{g('short_total'):.1%}")
+    if g("lending_fee") is not None and g("lending_fee") > 0:
+        parts.append(f"逆日歩{g('lending_fee'):g}円（売り方の踏み上げに注意）")
     return "・".join(parts)
 
 

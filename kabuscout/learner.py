@@ -254,7 +254,7 @@ def _fit(params: dict, X, y, w, reg: bool = False):
     列の選択ごと1つのモデルにまとめるので、予測時は全特徴量をそのまま渡せばよい。"""
     cols = [c for c in X.columns if _usable(X[c])]
     m = Pipeline([("cols", ColumnTransformer([("keep", "passthrough", cols)], remainder="drop")),
-                  ("hgb", (HistGradientBoostingRegressor if reg else HistGradientBoostingClassifier)(random_state=42, **params))])
+                  ("hgb", (HistGradientBoostingRegressor if reg else HistGradientBoostingClassifier)(**{"random_state": 42, **params}))])
     m.fit(X, y, hgb__sample_weight=w)
     return m
 

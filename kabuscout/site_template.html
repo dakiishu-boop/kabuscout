@@ -361,7 +361,7 @@ function renderLive(el) {
     closed.slice().reverse().map(p => `<tr><td>${dLabel(p.exit_date)}</td><td>${esc(p.code)} ${esc(p.name)}</td><td class="num">${yen(p.entry)}</td><td class="num">${yen(p.exit)}</td>
       <td class="num ${cls(p.pnl)}">${sgnYen(p.pnl)}</td><td>${esc(p.reason)}</td><td class="num">${p.days_held}</td></tr>`).join("") + `</tbody></table></div>`;
   h += `<p class="small muted">ルール: 資金${yen(cap)}円・現物のみ。毎日AI順位の高い順に最大${DATA.config.picks_per_day}銘柄（危機局面では1銘柄）を、翌営業日の寄付きで100株単位・1銘柄あたり評価額の1/${DATA.config.max_positions}まで買う。
-    ただし損切になったときの損失が資金の${pct0(DATA.config.risk_per_trade)}を超えないように株数を減らす。買えない値段の銘柄は飛ばす。決算発表をまたぐ銘柄は買わない。損益は売買コストを引いた値。</p>`;
+    ただし損切になったときの損失が資金の${pct0(DATA.config.risk_per_trade)}を超えないように株数を減らす。買えない値段の銘柄は飛ばす。損益は売買コストを引いた値（過去ペーパートレードと同じルール）。</p>`;
   el.innerHTML = h;
 }
 
@@ -425,7 +425,7 @@ function renderAI() {
   const m = act.metrics, lift = m.daily_top_ret - m.base_ret;
   const edge = lift >= 0.005 ? "優位性あり" : lift > 0 ? "わずかに優位" : "まだ優位性なし";
   let h = `<div class="kpis">
-    <div class="card kpi"><div class="k">AIの実力</div><div class="v" style="font-size:17px">${edge}</div><div class="s">ルールとの配合 AI ${pct0(m.alpha)}</div></div>
+    <div class="card kpi"><div class="k">AIの実力</div><div class="v" style="font-size:17px">${edge}</div><div class="s">並べ方: ${lift > 0 ? "AIの評価だけ" : "AIとルールを半々（AIが直近で不調のため）"}</div></div>
     <div class="card kpi"><div class="k">上位推奨の勝率</div><div class="v">${pct0(m.daily_top_win)}</div><div class="s">全シグナル平均 ${pct0(m.base_win)}</div></div>
     <div class="card kpi"><div class="k">上位推奨の期待値（コスト控除前）</div><div class="v ${cls(m.daily_top_ret)}">${pct(m.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.base_ret, 2)}</div></div>
     <div class="card kpi"><div class="k">学習データ</div><div class="v">${(act.n_train || 0).toLocaleString()}件</div><div class="s">モデル v${esc(act.version)}</div></div>

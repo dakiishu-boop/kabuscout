@@ -91,9 +91,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         cand = picks[~picks["code"].isin(held)]
         if pc.get("min_prob") and cand["prob"].notna().any():
             cand = cand[cand["prob"] >= pc["min_prob"]]
-        # 決算をまたいで持つと結果が読めなくなるので避ける（決算好反応のように発表後に買う戦略は次の決算まで余裕がある）
-        hz = cand["horizon"] if "horizon" in cand else H
-        cand = cand[cand["earnings_days"].isna() | (cand["earnings_days"] > hz * 1.5)]
+        # 決算をまたぐ銘柄も避けない: 過去ペーパートレードで避けても年率・最大下落とも改善せず（AIが「次の決算までの日数」を
+        # 特徴量として織り込み済み）、本番と過去の検証の売買ルールを揃えるため（ジャーナル ラウンド9）
         n_new = min(free, pc["picks_per_day"])
         if crisis:  # 特例（危機）局面では新規の買いを1銘柄に絞る
             n_new = min(n_new, 1)

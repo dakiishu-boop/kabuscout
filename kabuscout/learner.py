@@ -215,6 +215,11 @@ def _evaluate(df: pd.DataFrame, score: np.ndarray, prob: np.ndarray | None = Non
     return out
 
 
+def ai_weight(m: dict) -> float:
+    """並べ方でのAIの評価の割合。未知期間でAIが全シグナル平均を上回っていればAIだけで並べる。"""
+    return 1.0 if m["daily_top_ret"] - m["base_ret"] > 0 else 0.5
+
+
 def _merit(m: dict) -> float:
     """採用判定の指標: 毎日の上位推奨が全シグナル平均をどれだけ上回ったか（＋識別力を少し加味）。"""
     return (m["daily_top_ret"] - m["base_ret"]) + 0.02 * (m["auc"] - 0.5)
@@ -294,9 +299,10 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     imp = sorted(zip(MODEL_FEATURES, pi.importances_mean), key=lambda t: -t[1])[:12]
 
     auc = best_met["auc"]
-    # モデルの実力（未知期間で全シグナル平均をどれだけ上回ったか）に応じてルールとの配合を決める
-    lift = best_met["daily_top_ret"] - best_met["base_ret"]
-    alpha = 0.2 if lift <= 0 else 0.5 if lift < 0.005 else 0.8
+    # 並べ方は過去ペーパートレードと同じ「AIの評価だけ」。AIとルールを混ぜると年率・最大下落とも悪化した
+    # （AIのみ +10.0%・−27% ／ 半々 +7.8%・−36%、ジャーナル ラウンド9）。
+    # 直近の未知期間でAIが全シグナル平均を下回ったときだけ、念のためルールと半々にする
+    alpha = ai_weight(best_met)
     version = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d-%H%M")
     best_met.update(alpha=alpha, verdict=verdict, importance=[(k, float(v)) for k, v in imp],
                     train_n=int(len(d)), holdout_from=str(split)[:10], targets=list(final))
@@ -343,7 +349,7 @@ def score(df: pd.DataFrame, bundle: dict | None, weights: dict[str, float]) -> p
     df["rule_score"] = rule_score(df, weights)
     if bundle is not None and len(df):
         df["prob"], df["ai_score"] = bundle_predict(bundle, df)
-        alpha = bundle["alpha"]
+        alpha = ai_weight(bundle["metrics"]) if "daily_top_ret" in bundle.get("metrics", {}) else bundle["alpha"]
         df["final_score"] = alpha * df["ai_score"].rank(pct=True) + (1 - alpha) * df["rule_score"].rank(pct=True)
         df["model_version"] = bundle["version"]
     else:

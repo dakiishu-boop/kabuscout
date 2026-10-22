@@ -123,21 +123,23 @@ def with_plan_outcomes(d: pd.DataFrame, cfg: dict) -> pd.DataFrame:
                     exit_plan=rel["exit_days"].astype(float), complete_plan=rel["complete"].astype(bool))
 
 
-def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None) -> dict:
-    """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。"""
+def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features: list[str] | None = None) -> dict:
+    """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。features で特徴量を差し替えて比較できる。"""
     params = params or CANDIDATES[0]
-    X, w = tr[MODEL_FEATURES], _weights(tr, cfg["learning"])
+    features = features or MODEL_FEATURES
+    X, w = tr[features], _weights(tr, cfg["learning"])
     lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
     return dict(
         win=_fit(params, X, tr["label"], w),
         ret=_fit(params, X, tr["ret_plan"].clip(lo, hi) - cfg["research"]["cost"], w, reg=True),
         rank=_fit(params, X, tr.groupby("date")["ret_plan"].rank(pct=True) - 0.5, w, reg=True),
+        features=features,
     )
 
 
 def predict(models: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """(勝率予測, AIの評価)。AIの評価は、3つのモデルの予測それぞれの「同じ日の候補内での順位」の平均（0〜1）。"""
-    X = df[MODEL_FEATURES]
+    X = df[models.get("features", MODEL_FEATURES)]
     prob = models["win"].predict_proba(X)[:, 1]
     parts = pd.DataFrame({"win": prob, "ret": models["ret"].predict(X), "rank": models["rank"].predict(X)}, index=df.index)
     return prob, parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()

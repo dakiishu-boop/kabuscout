@@ -79,6 +79,8 @@ jquants:
   # Free プランは1分あたり5回まで。過去約2年分を開示日ごとに取得する
   requests_per_min: 5
   history_days: 760
+  # 開示から手元で使えるようになるまでの日数（Free は約12週遅れ）。研究でも同じだけ遅らせて本番と揃える
+  lag_days: 84
 
 site:
   url: https://dakiishu-boop.github.io/kabuscout/

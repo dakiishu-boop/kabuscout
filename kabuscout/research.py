@@ -625,3 +625,54 @@ def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_
         preds = w["preds"]
     res["_preds"] = preds
     return res
+
+
+def weak_consensus_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
+    """「弱い相場のときだけ合意モード」のしきい値（0=使わない）を毎週確かめ直す。
+    下落を抑えるリスク管理として採用したもの（ジャーナル ラウンド9）なので、別の値（やめる、を含む）が
+    年率で偶然の範囲を超えて良く、金庫でも負けず、最大下落も大きく悪化しない場合だけ切り替える（自分で直る仕組み）。"""
+    from . import backtest
+    if "agreement" not in preds:
+        return dict(adopted=False, reason="予測に合意の値がない", trials=0, cum_trials=0)
+    rc, pc = cfg["research"], cfg["paper_trading"]
+    inc = float(pc.get("weak_consensus") or 0)
+    vault_start = cal[-rc["vault_days"]]
+    rows = []
+    for v in sorted({0.0, 0.85, 0.9, 0.93, inc}):
+        eq = backtest.simulate(preds, cal, cfg, "ai", account=dict(weak_consensus=v))["equity"]
+        s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
+        yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
+                        for y, g in s_.groupby(s_.index.year)})
+        rows.append(dict(v=v, yearly=yr, stats=backtest._stats(s_), vault=float(vt.iloc[-1] / vt.iloc[0] - 1)))
+    inc_row = next(r for r in rows if r["v"] == inc)
+    others = [r for r in rows if r is not inc_row]
+    name = lambda r: "使わない" if r["v"] == 0 else f"弱い相場では3つのモデルがそろって上位{1 - r['v']:.0%}"
+    prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy='_weak_consensus'").fetchone()[0]
+    cum = int(prev + len(others))
+    t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
+    best, t_best = None, -9.0
+    for r in others:
+        d = (r["yearly"] - inc_row["yearly"]).dropna()
+        r["t"] = float(d.mean() / (d.std(ddof=1) / np.sqrt(len(d)))) if len(d) >= 3 and d.std(ddof=1) > 0 else None
+        if r["t"] is not None and r["t"] > t_best:
+            best, t_best = r, r["t"]
+    res = dict(incumbent=name(inc_row), trials=len(others), cum_trials=cum, t_needed=t_needed, adopted=False,
+               table=[dict(name=name(r), cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"], t=r.get("t")) for r in rows])
+    if best is None or t_best < t_needed:
+        res["reason"] = f"最有力「{name(best)}」も改善が偶然の範囲（t={t_best:.2f} < 必要{t_needed:.2f}）" if best else "候補なし"
+    elif best["vault"] < inc_row["vault"]:
+        res["reason"] = f"最有力「{name(best)}」は金庫期間で現行に負け"
+    elif best["stats"]["max_dd"] < inc_row["stats"]["max_dd"] - 0.05:
+        res["reason"] = f"最有力「{name(best)}」は最大下落が大きく悪化（{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}）"
+    else:
+        res.update(adopted=True, candidate=best["v"],
+                   reason=f"採用「{name(best)}」: 年率 {inc_row['stats']['cagr']:+.1%}→{best['stats']['cagr']:+.1%}、最大下落 "
+                          f"{inc_row['stats']['max_dd']:.0%}→{best['stats']['max_dd']:.0%}")
+        _save_param(cfg, "weak_consensus", best["v"], "弱い相場の合意モード")
+    log.info("  弱い相場の合意モード: %d通り（累計%d）→ %s", len(others), cum, res["reason"])
+    con.execute("INSERT INTO research_log VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        datetime.now().isoformat(timespec="seconds"), "_weak_consensus", len(others), cum, name(inc_row),
+        name(best) if best else None, inc_row["stats"]["cagr"], best["stats"]["cagr"] if best else None, t_best, t_needed,
+        inc_row["vault"], best["vault"] if best else None, 0, 0, int(res["adopted"]), res["reason"]))
+    con.commit()
+    return res

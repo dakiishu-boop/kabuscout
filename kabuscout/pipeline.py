@@ -239,18 +239,19 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     if research:  # 地合いによる買い控え（過去ペーパートレードの予測をそのまま使って比較）
         g = rs.gate_search(con, cfg, bt["_preds"], bt["_cal"])
         pf = rs.portfolio_search(con, cfg, bt["_preds"], bt["_cal"])
+        wc = rs.weak_consensus_search(con, cfg, bt["_preds"], bt["_cal"])
         rj = cfg["data"]["db_path"].parent / "research.json"
         if rj.exists():
             j = json.loads(rj.read_text())
-            j["gate"], j["portfolio"] = g, pf
+            j["gate"], j["portfolio"], j["weak_consensus"] = g, pf, wc
             j["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
             j["features"] = fs if research else None
             rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
         if summary is not None:
-            summary["gate"], summary["portfolio"] = g, pf
+            summary["gate"], summary["portfolio"], summary["weak_consensus"] = g, pf, wc
             summary["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
             summary["features"] = fs
-        if g["adopted"] or pf["adopted"]:
+        if g["adopted"] or pf["adopted"] or wc["adopted"]:
             from .config import load_config
             cfg = load_config()
             bt = backtest.run(cfg, ds, preds=bt["_preds"])

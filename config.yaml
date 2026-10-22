@@ -75,6 +75,11 @@ schedule:
   wait_for_data: true
   max_wait_min: 45
 
+jquants:
+  # Free プランは1分あたり5回まで。過去約2年分を開示日ごとに取得する
+  requests_per_min: 5
+  history_days: 760
+
 site:
   url: https://dakiishu-boop.github.io/kabuscout/
 

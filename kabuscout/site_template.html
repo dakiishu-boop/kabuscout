@@ -325,6 +325,9 @@ function renderLive(el) {
     <div class="card kpi"><div class="k">含み損益</div><div class="v ${cls(unreal)}">${sgnYen(unreal)}</div><div class="s">保有 ${open.length} / 最大${DATA.config.max_positions}</div></div>
     <div class="card kpi"><div class="k">勝率</div><div class="v">${closed.length ? pct0(wins / closed.length) : "-"}</div><div class="s">${wins}勝 ${closed.length - wins}敗</div></div>
   </div>`;
+  const dd = DATA.paper_dd;
+  if (dd != null) h += `<p class="small ${DATA.config.stop_review_dd && dd <= -DATA.config.stop_review_dd ? "down" : "muted"}">最高値からの下落（含み損込み）: <b>${pct(dd)}</b>
+    ／ 実際の資金なら売買を止めて見直す目安: −${pct0(DATA.config.stop_review_dd)}（過去ペーパートレードの最悪 ${DATA.backtest ? pct0(DATA.backtest.stats.ai.max_dd) : "-"} を大きく超える下落）</p>`;
   const pts = [["開始", cap]]; let acc = cap;
   for (const p of closed) { acc += p.pnl; pts.push([p.exit_date.slice(5).replace("-", "/"), acc]); }
   if (open.length) pts.push(["現在", eq]);
@@ -351,7 +354,8 @@ function renderLive(el) {
   else h += `<div class="card tbl"><table><thead><tr><th>決済日</th><th>銘柄</th><th class="num">買値</th><th class="num">売値</th><th class="num">損益</th><th>理由</th><th class="num">日数</th></tr></thead><tbody>` +
     closed.slice().reverse().map(p => `<tr><td>${dLabel(p.exit_date)}</td><td>${esc(p.code)} ${esc(p.name)}</td><td class="num">${yen(p.entry)}</td><td class="num">${yen(p.exit)}</td>
       <td class="num ${cls(p.pnl)}">${sgnYen(p.pnl)}</td><td>${esc(p.reason)}</td><td class="num">${p.days_held}</td></tr>`).join("") + `</tbody></table></div>`;
-  h += `<p class="small muted">ルール: 毎日AI順位の高い順に最大2銘柄（危機局面では1銘柄）を、翌営業日の寄付きで100株単位・1銘柄あたり評価額の1/${DATA.config.max_positions}まで買う。決算発表をまたぐ銘柄は買わない。</p>`;
+  h += `<p class="small muted">ルール: 資金${yen(cap)}円・現物のみ。毎日AI順位の高い順に最大${DATA.config.picks_per_day}銘柄（危機局面では1銘柄）を、翌営業日の寄付きで100株単位・1銘柄あたり評価額の1/${DATA.config.max_positions}まで買う。
+    ただし損切になったときの損失が資金の${pct0(DATA.config.risk_per_trade)}を超えないように株数を減らす。買えない値段の銘柄は飛ばす。決算発表をまたぐ銘柄は買わない。損益は売買コストを引いた値。</p>`;
   el.innerHTML = h;
 }
 
@@ -386,7 +390,8 @@ function renderBacktest(el) {
     <div class="s">年率 ／ 最大下落 ${pct0(S[k].max_dd)}${sub || ""}</div></div>`;
   let h = `<p class="small muted" style="margin-top:0">${B.start.slice(0, 4)}年〜${B.end.slice(0, 4)}年を、毎年「その年より前のデータだけで学習したAI」で売買した結果（ウォークフォワード）。
     取引コスト ${pct(B.cost, 1).replace("+", "")}/往復 を差し引き済み。</p>
-  <div class="kpis">${card("ai", "AIが選んだ場合", S.ai.trades ? `<br>${S.ai.trades.toLocaleString()}回・勝率${pct0(S.ai.win)}` : "")}
+  ${B.account ? `<p class="small muted">資金${yen(B.account.capital)}円・同時${B.account.max_positions}銘柄・100株単位・1回の損切は資金の${pct0(B.account.risk_per_trade)}まで（本番のペーパートレードと同じ）。最大下落は含み損込み。</p>` : ""}
+  <div class="kpis">${card("ai", "AIが選んだ場合", (S.ai.trades ? `<br>${S.ai.trades.toLocaleString()}回・勝率${pct0(S.ai.win)}` : "") + (S.ai.after_tax != null ? `<br>税引後の年率 ${pct(S.ai.after_tax)}・最悪の年 ${pct0(S.ai.worst_year)}` : ""))}
     ${card("random", "同じシグナルからランダム")}${card("index", "日経平均を持ち続けた場合")}
     <div class="card kpi"><div class="k">AIの上乗せ（対ランダム）</div><div class="v ${cls(S.ai.cagr - S.random.cagr)}">${pct(S.ai.cagr - S.random.cagr)}</div><div class="s">年率の差</div></div></div>
   <h2>資産の推移（対数目盛・赤い帯は危機局面）</h2><div class="card pad">
@@ -401,7 +406,8 @@ function renderBacktest(el) {
   <div class="caveat"><b>この結果を読むときの注意</b><ul style="margin:6px 0 0;padding-left:1.2em">
     <li>戦略の条件（押し目の深さなど）自体は過去データを見て作っているため、その分だけ実際より良く見えやすい</li>
     <li>対象は<b>今も上場している銘柄だけ</b>。途中で倒産・上場廃止した銘柄が含まれない（生存者バイアス）ため、特に古い年ほど良く見えやすい</li>
-    <li>2018年10月以前は1000株単位の銘柄も多かったが、ここでは売買単位を無視して金額で按分している</li>
+    <li>売買単位はすべて100株で計算している（2018年10月以前は1000株単位の銘柄も多く、当時は実際には買えなかった取引も含む）</li>
+    <li>税引後の年率は、年ごとの利益に20.315%を課税し、損失は3年まで繰り越した場合の目安</li>
     <li>危機局面（赤い帯）では本番と同じく新規の買いを1銘柄に絞っている</li></ul></div>`;
   el.innerHTML = h;
 }
@@ -418,7 +424,9 @@ function renderAI() {
     <div class="card kpi"><div class="k">上位推奨の期待値（コスト控除前）</div><div class="v ${cls(m.daily_top_ret)}">${pct(m.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.base_ret, 2)}</div></div>
     <div class="card kpi"><div class="k">学習データ</div><div class="v">${(act.n_train || 0).toLocaleString()}件</div><div class="s">モデル v${esc(act.version)}</div></div>
   </div>
-  <p class="small muted">成績は「学習に使っていない期間（${esc(m.holdout_from || "")}〜）」で測ったもの（取引コスト控除前。0.2%/往復を引くと研究ループの数字と同じ基準）。5営業日ごとに再学習し、新旧モデルを未知の期間で対決させて勝った方を採用しています。判定: ${esc(m.verdict || "")}</p>`;
+  <p class="small muted">成績は「学習に使っていない期間（${esc(m.holdout_from || "")}〜）」で測ったもの（取引コスト控除前。0.2%/往復を引くと研究ループの数字と同じ基準）。5営業日ごとに再学習し、新旧モデルを未知の期間で対決させて勝った方を採用しています。判定: ${esc(m.verdict || "")}</p>
+  ${m.targets ? `<p class="small muted">AIは3つの見方で学習し、その日の候補の中での順位を平均して並べています: ①勝ちやすさ（利確ラインに先に届くか） ②実際に使う売買ルールでの手取りリターン ③その日の候補の中での順位。
+    1つだけで学ぶと特定の年に頼った成績になりやすく、平均すると過去ペーパートレードの最大下落が約半分になりました。「AI勝率予測」は①の値です。</p>` : ""}`;
   if (m.importance && m.importance.length) {
     const mx = Math.max(...m.importance.map(t => t[1]), 1e-9);
     h += `<h2>AIが重視している要素</h2><div class="card pad">` + m.importance.map(([k, v]) =>

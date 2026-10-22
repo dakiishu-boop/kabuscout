@@ -46,7 +46,13 @@ learning:
 
 paper_trading:
   enabled: true
-  capital_jpy: 3000000
+  # 実用段階で使う予定の資金（100万円）に合わせる。株数は100株単位、1銘柄は「資金 ÷ 同時保有数」まで
+  capital_jpy: 1000000
+  # 損切になったときの損失を資金のこの割合までに抑える（kabuscout/risk.py・ジャーナル ラウンド8）
+  risk_per_trade: 0.02
+  # 含み損込みの資金が最高値からこれ以上減ったら、通知とWebページで「運用を止めて見直す目安」を出す
+  # （過去ペーパートレードの最大下落 約−27% を大きく超える＝想定外の状態）
+  stop_review_dd: 0.35
   max_positions: 5
   # 毎日、順位の高い順に最大何銘柄を新規で買うか
   picks_per_day: 2

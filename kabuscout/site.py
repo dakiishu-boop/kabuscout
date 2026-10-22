@@ -62,7 +62,10 @@ def collect(con, cfg: dict) -> dict:
     summaries = [json.loads(s) for s in sums["json"]]
     signals = q("SELECT date, code, name, strategies, prob, rank, close, tp, sl, reasons, earnings, label, ret, "
                 "exit_days, labeled FROM signals ORDER BY date DESC, rank LIMIT 1500")
-    positions = q("SELECT * FROM paper_positions ORDER BY id DESC")
+    positions = q("SELECT * FROM paper_positions WHERE status!='archived' ORDER BY id DESC")
+    cap = cfg["paper_trading"]["capital_jpy"]
+    eqs = q("SELECT equity FROM paper_equity WHERE capital=? ORDER BY date", (cap,))["equity"]
+    paper_dd = float(eqs.iloc[-1] / max(eqs.max(), cap) - 1) if len(eqs) else None
     models = q("SELECT version, trained_at, data_end, n_train, metrics, active FROM models ORDER BY version DESC LIMIT 30")
     models["metrics"] = models["metrics"].map(json.loads)
     stats = q("SELECT * FROM strategy_stats WHERE date=(SELECT MAX(date) FROM strategy_stats)")
@@ -82,11 +85,13 @@ def collect(con, cfg: dict) -> dict:
         data_sources=_sources(cfg),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
         summaries=summaries, signals=_records(signals), positions=_records(positions),
-        models=_records(models), stats=_records(stats), prices=prices, last_close=last_close,
+        models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd,
         strategies={s.key: dict(name=s.name, desc=s.desc) for s in STRATEGIES},
         config=dict(capital=cfg["paper_trading"]["capital_jpy"], horizon=cfg["labeling"]["horizon_days"],
                     tp_atr=cfg["labeling"]["tp_atr"], sl_atr=cfg["labeling"]["sl_atr"],
-                    max_positions=cfg["paper_trading"]["max_positions"],
+                    max_positions=cfg["paper_trading"]["max_positions"], picks_per_day=cfg["paper_trading"]["picks_per_day"],
+                    risk_per_trade=cfg["paper_trading"].get("risk_per_trade"),
+                    stop_review_dd=cfg["paper_trading"].get("stop_review_dd"),
                     crisis_weight=cfg["learning"].get("crisis_weight", 0.3)),
     )
 

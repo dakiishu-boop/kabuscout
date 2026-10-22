@@ -3,8 +3,12 @@
 仕組み:
 1. 過去の全営業日・全銘柄でシグナルを再現し、その後どうなったかを
    トリプルバリア法でラベル付け（翌日寄付きで買い → 利確/損切/期限のどれが先か）。
-2. 「どんな状況のシグナルが勝ちやすいか」を勾配ブースティングで学習。新しいデータほど重く扱う。
-3. 再学習のたびに複数のモデル候補を時系列ホールドアウトで比較し、
+2. 3つの見方で勾配ブースティングを学習し、その日の候補内での順位を平均してAIの評価にする（新しいデータほど重く扱う）:
+   - 勝ちやすさ: 共通の短期ルールで利確に先に届くか
+   - 手取りリターン: 実際に使う売買ルール（戦略ごと）で、コストを引いた損益
+   - その日の順位: 同じ日の候補の中で、実際の売買ルールでのリターンが何番目か
+   1つだけだと特定の年頼みになりやすく、平均すると年率は同程度のまま最大下落が大きく縮んだ（ジャーナル ラウンド8）。
+3. 再学習のたびに時系列ホールドアウトで成績を確かめ、
    さらに現役モデル(チャンピオン)と「両者にとって未知の期間」で勝負させ、勝った方だけ採用。
 4. 戦略ごとの直近成績から重みを更新（今の相場で効いている網を重く）。
 日々データが増えるので、放っておくほど学習データが増え、相場の変化にも追従する。
@@ -20,7 +24,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
@@ -39,7 +43,7 @@ log = logging.getLogger(__name__)
 MARKET_FEATURES = ["mkt_dev75", "mkt_ret5", "mkt_ret20", "mkt_vol20", "breadth25", "sector_mom20"]
 MODEL_FEATURES = [f for f in FEATURES if f not in MARKET_FEATURES] + EARN_FEATURES + EVENT_FEATURES + DIV_FEATURES + FIN_FEATURES + MODEL_MACRO_FEATURES + FLAG_COLS + ["n_strat"]
 
-# 強めの正則化ほど期間をまたいで安定した（実験結果）
+# 強めの正則化ほど期間をまたいで安定した（実験結果）。学習に使うのは先頭の設定（過去ペーパートレードで確かめた設定）
 CANDIDATES = [
     dict(learning_rate=0.03, max_iter=150, max_leaf_nodes=7, min_samples_leaf=2000, l2_regularization=5.0),
     dict(learning_rate=0.05, max_iter=200, max_leaf_nodes=15, min_samples_leaf=500, l2_regularization=2.0),
@@ -104,6 +108,49 @@ def label(ind: dict, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------- AIの学習目標（3つの見方の平均）
+def plan_horizon(cfg: dict) -> int:
+    """使っている売買ルールの中で最長の保有日数（学習とテストの間を空ける日数に使う）。"""
+    lab = cfg["labeling"]
+    return max([lab["horizon_days"]] + [p["horizon_days"] for p in (lab.get("per_strategy") or {}).values()])
+
+
+def with_plan_outcomes(d: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """各シグナルに、実際に使う売買ルール（戦略ごと）での結果（ret_plan など）を付ける。"""
+    from .backtest import apply_plans
+    rel = apply_plans(d[["date", "code", "strategies", "atr", "ret", "label", "exit_days", "complete"]].copy(), cfg)
+    return d.assign(ret_plan=rel["ret"].astype(float), label_plan=rel["label"].astype(float),
+                    exit_plan=rel["exit_days"].astype(float), complete_plan=rel["complete"].astype(bool))
+
+
+def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None) -> dict:
+    """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。"""
+    params = params or CANDIDATES[0]
+    X, w = tr[MODEL_FEATURES], _weights(tr, cfg["learning"])
+    lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
+    return dict(
+        win=_fit(params, X, tr["label"], w),
+        ret=_fit(params, X, tr["ret_plan"].clip(lo, hi) - cfg["research"]["cost"], w, reg=True),
+        rank=_fit(params, X, tr.groupby("date")["ret_plan"].rank(pct=True) - 0.5, w, reg=True),
+    )
+
+
+def predict(models: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """(勝率予測, AIの評価)。AIの評価は、3つのモデルの予測それぞれの「同じ日の候補内での順位」の平均（0〜1）。"""
+    X = df[MODEL_FEATURES]
+    prob = models["win"].predict_proba(X)[:, 1]
+    parts = pd.DataFrame({"win": prob, "ret": models["ret"].predict(X), "rank": models["rank"].predict(X)}, index=df.index)
+    return prob, parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()
+
+
+def bundle_predict(bundle: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """保存済みモデルでの (勝率予測, AIの評価)。ラウンド7までの旧モデル（勝ちやすさだけ）にも対応。"""
+    if "models" in bundle:
+        return predict(bundle["models"], df)
+    prob = bundle["model"].predict_proba(df[bundle["features"]])[:, 1]
+    return prob, prob
+
+
 # ---------------------------------------------------------------- strategy weights
 def strategy_stats(ds: pd.DataFrame, lookback_days: int = 120) -> pd.DataFrame:
     d = ds[ds["complete"]]
@@ -142,10 +189,12 @@ def _weights(df: pd.DataFrame, lc: dict) -> np.ndarray:
     return w
 
 
-def _evaluate(df: pd.DataFrame, prob: np.ndarray, top_k: int = 5) -> dict:
-    d = df.assign(prob=prob)
+def _evaluate(df: pd.DataFrame, score: np.ndarray, prob: np.ndarray | None = None, top_k: int = 5) -> dict:
+    """score の高い順に選んだときの成績。AUC（識別力）は勝率予測 prob で測る。"""
+    d = df.assign(prob=score)
     y = d["label"].to_numpy()
-    auc = roc_auc_score(y, prob) if len(np.unique(y)) > 1 else 0.5
+    p = score if prob is None else prob
+    auc = roc_auc_score(y, p) if len(np.unique(y)) > 1 else 0.5
     q = d["prob"].quantile(0.9)
     top = d[d["prob"] >= q]
     daily = d.sort_values("prob", ascending=False).groupby("date").head(top_k)
@@ -181,40 +230,38 @@ def _usable(s: pd.Series) -> bool:
     return len(vc) > 20 or int(vc.iloc[1]) >= 200
 
 
-def _fit(params: dict, X, y, w):
+def _fit(params: dict, X, y, w, reg: bool = False):
     """学習期間に値が無い（または1種類しかない）特徴量は外して学習する。
     例: 2008年までのデータには適時開示がまだ無い。新しい scikit-learn はこうした列でエラーになる。
     列の選択ごと1つのモデルにまとめるので、予測時は全特徴量をそのまま渡せばよい。"""
     cols = [c for c in X.columns if _usable(X[c])]
     m = Pipeline([("cols", ColumnTransformer([("keep", "passthrough", cols)], remainder="drop")),
-                  ("hgb", HistGradientBoostingClassifier(random_state=42, **params))])
+                  ("hgb", (HistGradientBoostingRegressor if reg else HistGradientBoostingClassifier)(random_state=42, **params))])
     m.fit(X, y, hgb__sample_weight=w)
     return m
 
 
 def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     lc = cfg["learning"]
-    H = cfg["labeling"]["horizon_days"]
-    d = ds[ds["complete"]].sort_values("date").reset_index(drop=True)
+    H = plan_horizon(cfg)
+    d = ds[ds["complete"]]
     if len(d) < lc["min_train_samples"]:
         log.warning("学習データ不足: %d 件", len(d))
         return None
+    d = with_plan_outcomes(d, cfg)
+    d = d[d["complete_plan"]].sort_values("date").reset_index(drop=True)
+    # 成績は実際に使う売買ルールでのリターンで測る
+    ev = lambda df: df.assign(ret=df["ret_plan"])
 
     dates = np.array(sorted(d["date"].unique()))
     split = dates[int(len(dates) * (1 - lc["holdout_fraction"]))]
     purge_end = dates[max(0, np.searchsorted(dates, split) - H)]  # ラベル期間の重複を除去
     tr, ho = d[d["date"] < purge_end], d[d["date"] >= split]
-    X_tr, y_tr = tr[MODEL_FEATURES], tr["label"]
-    w_tr = _weights(tr, lc)
-
-    results = []
-    for p in CANDIDATES:
-        m = _fit(p, X_tr, y_tr, w_tr)
-        met = _evaluate(ho, m.predict_proba(ho[MODEL_FEATURES])[:, 1])
-        results.append((p, m, met))
-        log.info("  候補 %s → AUC %.3f / 日次上位勝率 %.1f%% / 期待値 %+.2f%%",
-                 p["max_leaf_nodes"], met["auc"], met["daily_top_win"] * 100, met["daily_top_ret"] * 100)
-    best_p, best_m, best_met = max(results, key=lambda r: _merit(r[2]))
+    models = fit_models(tr, cfg)
+    prob, sc = predict(models, ho)
+    best_met = _evaluate(ev(ho), sc, prob)
+    log.info("  未知期間: AUC %.3f / 日次上位勝率 %.1f%% / 期待値 %+.2f%%（全体 %+.2f%%）",
+             best_met["auc"], best_met["daily_top_win"] * 100, best_met["daily_top_ret"] * 100, best_met["base_ret"] * 100)
 
     # ---- チャンピオン（現役）との対決：両者にとって未知の期間で比較
     champ = load_active(con, cfg)
@@ -222,12 +269,13 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     if champ is not None:
         window = ho[ho["date"] > pd.Timestamp(champ["data_end"])]
         try:
-            c_prob = champ["model"].predict_proba(window[champ["features"]])[:, 1]
+            c_prob, c_sc = bundle_predict(champ, window)
         except Exception:  # 特徴量の構成が変わった旧モデルは比較不能
             window = window.iloc[:0]
         if len(window) >= 300:
-            c_met = _evaluate(window, c_prob)
-            n_met = _evaluate(window, best_m.predict_proba(window[MODEL_FEATURES])[:, 1])
+            c_met = _evaluate(ev(window), c_sc, c_prob)
+            n_prob, n_sc = predict(models, window)
+            n_met = _evaluate(ev(window), n_sc, n_prob)
             if _merit(n_met) < _merit(c_met):
                 log.info("挑戦者が現役に敗北 → 現役モデルを維持")
                 _record_stats(con, cfg, ds, data_end)
@@ -237,9 +285,9 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
             verdict = "比較期間不足のため最新データで更新"
 
     # 全データで再学習して本番モデルに
-    final = _fit(best_p, d[MODEL_FEATURES], d["label"], _weights(d, lc))
+    final = fit_models(d, cfg)
     sample = ho.sample(min(4000, len(ho)), random_state=0)
-    pi = permutation_importance(best_m, sample[MODEL_FEATURES], sample["label"],
+    pi = permutation_importance(models["win"], sample[MODEL_FEATURES], sample["label"],
                                 n_repeats=3, random_state=0, scoring="roc_auc")
     imp = sorted(zip(MODEL_FEATURES, pi.importances_mean), key=lambda t: -t[1])[:12]
 
@@ -249,15 +297,15 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     alpha = 0.2 if lift <= 0 else 0.5 if lift < 0.005 else 0.8
     version = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d-%H%M")
     best_met.update(alpha=alpha, verdict=verdict, importance=[(k, float(v)) for k, v in imp],
-                    train_n=int(len(d)), holdout_from=str(split)[:10])
+                    train_n=int(len(d)), holdout_from=str(split)[:10], targets=list(final))
     path = cfg["data"]["model_dir"] / f"model_{version}.joblib"
-    bundle = dict(model=final, features=MODEL_FEATURES, version=version, alpha=alpha,
+    bundle = dict(models=final, features=MODEL_FEATURES, version=version, alpha=alpha,
                   metrics=best_met, data_end=data_end)
     joblib.dump(bundle, path)
     con.execute("UPDATE models SET active=0")
     con.execute("INSERT OR REPLACE INTO models VALUES (?,?,?,?,?,?,?,1)",
                 (version, datetime.now().isoformat(timespec="seconds"), data_end, len(d),
-                 json.dumps(best_p), json.dumps(best_met, ensure_ascii=False), str(path)))
+                 json.dumps(CANDIDATES[0]), json.dumps(best_met, ensure_ascii=False), str(path)))
     con.commit()
     _record_stats(con, cfg, ds, data_end)
     log.info("新モデル v%s 採用: AUC %.3f, %s", version, auc, verdict)
@@ -292,9 +340,9 @@ def score(df: pd.DataFrame, bundle: dict | None, weights: dict[str, float]) -> p
     df = df.copy()
     df["rule_score"] = rule_score(df, weights)
     if bundle is not None and len(df):
-        df["prob"] = bundle["model"].predict_proba(df[bundle["features"]])[:, 1]
+        df["prob"], df["ai_score"] = bundle_predict(bundle, df)
         alpha = bundle["alpha"]
-        df["final_score"] = alpha * df["prob"].rank(pct=True) + (1 - alpha) * df["rule_score"].rank(pct=True)
+        df["final_score"] = alpha * df["ai_score"].rank(pct=True) + (1 - alpha) * df["rule_score"].rank(pct=True)
         df["model_version"] = bundle["version"]
     else:
         df["prob"] = np.nan

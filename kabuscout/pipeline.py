@@ -91,9 +91,8 @@ def params_path(cfg: dict):
 
 
 def dataset(cfg: dict, pl: pd.DataFrame) -> pd.DataFrame:
-    """シグナル表に現在の戦略パラメータを当てはめた学習データ。
-    AIの学習目標は全シグナル共通の短期ルール（共通の売買ルールでのラベル）のままにする。
-    戦略ごとのルールで付け直すと、遠い利確ラインの戦略が「失敗」扱いになって順位付けが崩れた（ジャーナル ラウンド5）。"""
+    """シグナル表に現在の戦略パラメータを当てはめた学習データ（label / ret は共通の短期ルールでの結果）。
+    実際に使う戦略ごとの売買ルールでの結果は、学習のときに learner.with_plan_outcomes で付ける（ジャーナル ラウンド8）。"""
     return apply_flags(pl, load_params(params_path(cfg)))
 
 

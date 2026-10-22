@@ -10,6 +10,9 @@ MOOD_COLOR = {"強気": 0xD9534F, "中立": 0xF0AD4E, "弱気": 0x337AB7}  # 日
 MEDALS = ["🥇", "🥈", "🥉"]
 
 
+# 含み損込みの評価額が最高値から config の stop_review_dd 以上減ったときの表示（過去の最悪を大きく超える＝想定外）
+STOP_REVIEW = "最高値からの下落が、過去ペーパートレードの最悪を大きく超えました。実際の資金なら売買を止めて見直す目安です"
+
 def market_stats(ind: dict) -> dict:
     r = {k: float(ind[k].iloc[-1].iloc[0]) for k in ("mkt_dev75", "mkt_ret20", "breadth25")}
     r["mood"] = "強気" if r["mkt_dev75"] > 0 and r["breadth25"] > 0.5 else "弱気" if r["mkt_dev75"] < 0 else "中立"
@@ -110,7 +113,10 @@ def to_markdown(rep: dict) -> str:
                   f"（全シグナル平均 {mo['base_ret']:+.2%} / {mo['base_win']:.0%}）"]
     if rep["paper"]:
         pt = rep["paper"]
-        L.append(f"ペーパートレード: 評価額 {pt['equity']:,.0f}円（実現 {pt['realized']:+,.0f} / 含み {pt['unrealized']:+,.0f}）")
+        L.append(f"ペーパートレード: 評価額 {pt['equity']:,.0f}円（実現 {pt['realized']:+,.0f} / 含み {pt['unrealized']:+,.0f} / "
+                 f"最高値から {pt.get('drawdown', 0):+.1%}）")
+        if pt.get("stop_review"):
+            L.append(f"  ⚠️ {STOP_REVIEW}")
         L += [f"  ・{e}" for e in pt["events"]]
     return "\n".join(L)
 
@@ -150,8 +156,10 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
     if pt:
         wr = f"{pt['win_rate']:.0%}" if pt["win_rate"] is not None else "-"
         embeds.append(dict(
-            title="💼 ペーパートレード（仮想300万円）", color=0x2CA02C,
-            description="\n".join(f"• {e}" for e in pt["events"]) or "本日の売買なし",
+            title=f"💼 ペーパートレード（仮想{pt.get('capital', 0) / 10000:,.0f}万円）",
+            color=0xD62728 if pt.get("stop_review") else 0x2CA02C,
+            description=((f"⚠️ **{STOP_REVIEW}**\n" if pt.get("stop_review") else "")
+                         + ("\n".join(f"• {e}" for e in pt["events"]) or "本日の売買なし")),
             fields=[
                 dict(name="評価額", value=f"{pt['equity']:,.0f}円", inline=True),
                 dict(name="実現損益", value=f"{pt['realized']:+,.0f}円", inline=True),
@@ -159,6 +167,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
                 dict(name="保有 / 注文", value=f"{pt['open']} / {pt['pending']}", inline=True),
                 dict(name="決済", value=f"{pt['closed']}回", inline=True),
                 dict(name="勝率", value=wr, inline=True),
+                dict(name="最高値からの下落", value=f"{pt.get('drawdown', 0):+.1%}", inline=True),
             ]))
     lines = []
     if rep["model"]:
@@ -226,9 +235,10 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
     embeds.append(dict(
         title=f"📜 過去でのペーパートレード（{bt['start'][:4]}〜{bt['end'][:4]}・ウォークフォワード）",
         url=(url + "#paper") if url else None, color=0x9467BD,
-        description="毎年「その年より前のデータだけ」で学習したAIで、その年を売買した結果",
+        description=f"毎年「その年より前のデータだけ」で学習したAIで、その年を売買した結果（資金{bt.get('account', {}).get('capital', 0) / 10000:,.0f}万円・100株単位・含み損込み）",
         fields=[
-            dict(name="AI選定", value=f"年率 **{s['ai']['cagr']:+.1%}**\n最大下落 {s['ai']['max_dd']:.0%}", inline=True),
+            dict(name="AI選定", value=f"年率 **{s['ai']['cagr']:+.1%}**（税引後 {s['ai'].get('after_tax', float('nan')):+.1%}）\n"
+                                     f"最大下落 {s['ai']['max_dd']:.0%}・最悪の年 {s['ai'].get('worst_year', float('nan')):+.0%}", inline=True),
             dict(name="ランダム選定", value=f"年率 {s['random']['cagr']:+.1%}\n最大下落 {s['random']['max_dd']:.0%}", inline=True),
             dict(name="日経平均を保有", value=f"年率 {s['index']['cagr']:+.1%}\n最大下落 {s['index']['max_dd']:.0%}", inline=True),
         ],

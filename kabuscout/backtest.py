@@ -9,7 +9,8 @@
 注意（ページにも表示する）:
 - 戦略の条件そのものは過去データで調整しているので、その分は成績が良く見えやすい
 - 銘柄は現在上場している銘柄のみ（倒産・上場廃止した銘柄が含まれない＝生存者バイアス）
-- 2018年10月以前は1000株単位の銘柄も多かったが、ここでは単位を無視して金額で按分している
+- 売買単位はすべて100株として計算（2018年10月以前は1000株単位の銘柄も多く、当時は実際には買えなかった取引も含む）
+- 資金・株数・現金・毎日の時価で資産を追う（最大下落は含み損込み）。株数の決め方は本番と同じ（risk.py）
 """
 from __future__ import annotations
 
@@ -21,14 +22,17 @@ import pandas as pd
 
 from . import learner, regimes
 from .data import PriceStore
-from .learner import CANDIDATES, MODEL_FEATURES
+from .risk import order_shares
 
 log = logging.getLogger(__name__)
 
 
 def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int) -> pd.DataFrame:
-    H = cfg["labeling"]["horizon_days"]
-    d = ds[ds["complete"]].sort_values("date").reset_index(drop=True)
+    """1年ずつ、その年より前のデータだけで本番と同じAI（3つの学習目標）を作って判定する。
+    返す ret / label / exit_days は、実際に使う売買ルール（戦略ごと）での結果。"""
+    H = learner.plan_horizon(cfg)
+    d = learner.with_plan_outcomes(ds[ds["complete"]], cfg)
+    d = d[d["complete_plan"]].sort_values("date").reset_index(drop=True)
     out = []
     for y in range(start_year, d["date"].dt.year.max() + 1):
         y0 = pd.Timestamp(f"{y}-01-01")
@@ -40,10 +44,12 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int) -> pd.DataFrame:
         te = d[d["date"].dt.year == y]
         if te.empty:
             continue
-        m = learner._fit(CANDIDATES[0], tr[MODEL_FEATURES], tr["label"], learner._weights(tr, cfg["learning"]))
-        out.append(te.assign(prob=m.predict_proba(te[MODEL_FEATURES])[:, 1]))
+        prob, sc = learner.predict(learner.fit_models(tr, cfg), te)
+        out.append(te.assign(prob=sc, win_prob=prob))
         log.info("  %d年: %d件で学習 → %d件を判定", y, len(tr), len(te))
-    return pd.concat(out, ignore_index=True)
+    pr = pd.concat(out, ignore_index=True)
+    return pr.assign(ret=pr["ret_plan"], label=pr["label_plan"], exit_days=pr["exit_plan"],
+                     complete=pr["complete_plan"], _relabeled=1)
 
 
 def apply_plans(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -89,56 +95,149 @@ def gate_active(gate: dict | None, mkt_dev75: float, mkt_ret20: float, crisis: b
             or (gate.get("crisis") and crisis))
 
 
+_CLOSE: dict = {}
+
+
+def _closes(cfg: dict, codes) -> pd.DataFrame:
+    """保有中の銘柄を毎日の終値で評価するための終値表（同じ銘柄の組み合わせなら使い回す）。"""
+    key = tuple(sorted(codes))
+    if _CLOSE.get("key") != key:
+        c = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=list(key))["close"]
+        _CLOSE.update(key=key, close=c.ffill(limit=5))
+    return _CLOSE["close"]
+
+
+def with_stops(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """株数を決めるのに使う「損切までの値幅（円）」を各シグナルに付ける（その戦略の売買ルールの損切幅 × ATR）。"""
+    from .strategies import plan_for
+    if "_stop" in preds:
+        return preds
+    lab = cfg["labeling"]
+    k = {s: plan_for(s.split(","), lab)["sl_atr"] for s in preds["strategies"].unique()}
+    return preds.assign(_stop=preds["strategies"].map(k).astype(float) * preds["atr"])
+
+
 def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0,
-             gate: dict | None = "config", max_positions: int | None = None, picks_per_day: int | None = None) -> dict:
-    """シグナル日の翌営業日寄付で買い、ラベル付けと同じ規則（利確/損切/期限）で決済する。"""
+             gate: dict | None = "config", max_positions: int | None = None, picks_per_day: int | None = None,
+             account: dict | None = None) -> dict:
+    """実際の口座と同じように、現金・株数（100株単位）・毎日の時価で資産を追う（最大下落も含み損込みで測る）。
+    シグナル日の終値で株数を決めて注文し、翌営業日の寄付で約定、売買ルール（利確/損切/期限）で決済する。
+    株数の決め方は risk.order_shares（本番のペーパートレードと同じ）。account で資金などを差し替えて比較できる。"""
     pc, rc = cfg["paper_trading"], cfg["research"]
-    cap, cost = pc["capital_jpy"], rc["cost"]
+    acc = {**pc, **(account or {})}
+    cap, half_cost = acc["capital_jpy"], rc["cost"] / 2
     maxp = max_positions or pc["max_positions"]
     per_day = picks_per_day or pc["picks_per_day"]
+    scan = cfg["screening"]["top_n"]  # 1日に見る候補の数（本番の通知と同じ上位15銘柄）
     rng = np.random.default_rng(seed)
     if gate == "config":
         gate = pc.get("gate")
+    preds = with_stops(preds, cfg)
     cal = cal[cal >= preds["date"].min()]
-    pos_of = {d: i for i, d in enumerate(cal)}
+    close = _closes(cfg, preds["code"].unique()).reindex(cal).ffill(limit=5)
+    cix = {k: j for j, k in enumerate(close.columns)}
+    C = close.to_numpy("float64")
     by_date = {d: g for d, g in preds.groupby("date")}
-    cash_eq = float(cap)
-    open_pos: list[tuple[int, float, float]] = []  # (決済日index, 投入額, リターン)
+    cash = float(cap)
+    open_pos: list[dict] = []
+    pending: list[dict] = []
     curve, trades = [], []
+    skipped = 0
     for i, d in enumerate(cal):
+        # 1) 前日の注文を寄付で約定（寄付が想定より高く現金が足りなければ、買える単元まで減らす）
+        for o in pending:
+            px = o["entry"] * (1 + half_cost)
+            n = min(o["shares"], int(cash / px // acc["lot_size"]) * acc["lot_size"])
+            if n <= 0:
+                continue
+            cash -= n * px
+            open_pos.append(dict(o, shares=n))
+        pending = []
+        # 2) 決済
         still = []
-        for ex_i, size, r in open_pos:
-            if ex_i <= i:
-                pnl = size * (r - cost)
-                cash_eq += pnl
-                trades.append((d, r - cost))
+        for p in open_pos:
+            if p["exit_i"] <= i:
+                proceeds = p["shares"] * p["exit_px"] * (1 - half_cost)
+                cost_in = p["shares"] * p["entry"] * (1 + half_cost)
+                cash += proceeds
+                trades.append((d, proceeds / cost_in - 1, proceeds - cost_in))
             else:
-                still.append((ex_i, size, r))
+                still.append(p)
         open_pos = still
+        # 3) 時価評価
+        value = 0.0
+        for p in open_pos:
+            c = C[i, p["ci"]]
+            value += p["shares"] * (c if np.isfinite(c) else p["entry"])
+        eq = cash + value
+        curve.append((d, eq))
+        # 4) 新規の注文
         g = by_date.get(d)
-        if g is not None and i + 1 < len(cal):
-            free = maxp - len(open_pos)
-            n_new = min(free, per_day)
-            if g["crisis"].iloc[0] == 1:
-                n_new = min(n_new, 1)  # 本番と同じく、危機局面では新規1銘柄まで
-            if gate_active(gate, g["mkt_dev75"].iloc[0], g["mkt_ret20"].iloc[0], g["crisis"].iloc[0] == 1):
-                n_new = min(n_new, gate["max_new"])
-            if n_new > 0:
-                g = g.sort_values("prob", ascending=False) if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
-                for _, r in g.head(n_new).iterrows():
-                    size = cash_eq / maxp
-                    open_pos.append((i + int(r["exit_days"]), size, float(r["ret"])))
-        curve.append((d, cash_eq))
+        if g is None or i + 1 >= len(cal):
+            continue
+        n_new = min(maxp - len(open_pos), per_day)
+        if g["crisis"].iloc[0] == 1:
+            n_new = min(n_new, 1)  # 本番と同じく、危機局面では新規1銘柄まで
+        if gate_active(gate, g["mkt_dev75"].iloc[0], g["mkt_ret20"].iloc[0], g["crisis"].iloc[0] == 1):
+            n_new = min(n_new, gate["max_new"])
+        if n_new <= 0:
+            continue
+        g = g.sort_values("prob", ascending=False) if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
+        held = {p["code"] for p in open_pos}
+        avail = cash
+        for _, r in g.head(scan).iterrows():
+            if n_new <= 0:
+                break
+            if r["code"] in held or r["code"] not in cix:
+                continue
+            n = order_shares(acc, eq, avail, float(r["close"]) * (1 + half_cost), float(r["_stop"]), eq / maxp)
+            if n <= 0:  # 単元（100株）で買えない値段・損失の上限で1単元も買えない
+                skipped += 1
+                continue
+            entry = float(r["entry"])
+            pending.append(dict(code=r["code"], ci=cix[r["code"]], shares=n, entry=entry, stop=float(r["_stop"]),
+                                exit_i=i + int(r["exit_days"]), exit_px=entry * (1 + float(r["ret"]))))
+            held.add(r["code"])
+            avail -= n * float(r["close"]) * (1 + half_cost)
+            n_new -= 1
     eq = pd.Series(dict(curve))
-    tr = pd.DataFrame(trades, columns=["date", "net"])
-    return dict(equity=eq, trades=tr)
+    tr = pd.DataFrame(trades, columns=["date", "net", "pnl"])
+    return dict(equity=eq, trades=tr, skipped=skipped)
+
+
+def after_tax(eq: pd.Series, rate: float = 0.20315) -> float:
+    """税引き後の年率の目安。年ごとの利益に課税（損失は確定申告をすれば3年まで繰り越せる）し、
+    納めた税金の分は翌年以降の元手から減らして複利で計算する。"""
+    if len(eq) < 2:
+        return float("nan")
+    after, carry = float(eq.iloc[0]), []  # carry: (年, 繰越損失の割合でなく金額)
+    prev = float(eq.iloc[0])
+    for y, g in eq.groupby(eq.index.year):
+        r = float(g.iloc[-1]) / prev - 1
+        prev = float(g.iloc[-1])
+        gain = after * r
+        after += gain
+        carry = [(yy, a) for yy, a in carry if y - yy <= 3]
+        if gain < 0:
+            carry.append((y, -gain))
+            continue
+        for k, (yy, a) in enumerate(carry):
+            use = min(gain, a)
+            gain -= use
+            carry[k] = (yy, a - use)
+        carry = [(yy, a) for yy, a in carry if a > 0]
+        after -= gain * rate
+    years = (eq.index[-1] - eq.index[0]).days / 365.25
+    return float((after / float(eq.iloc[0])) ** (1 / max(years, 1e-9)) - 1)
 
 
 def _stats(eq: pd.Series, trades: pd.DataFrame | None = None) -> dict:
     years = (eq.index[-1] - eq.index[0]).days / 365.25
     dd = (eq / eq.cummax() - 1).min()
+    ends = eq.groupby(eq.index.year).last()
+    yearly = ends / np.r_[eq.iloc[0], ends.to_numpy()[:-1]] - 1
     out = dict(cagr=float((eq.iloc[-1] / eq.iloc[0]) ** (1 / max(years, 1e-9)) - 1), max_dd=float(dd),
-               total=float(eq.iloc[-1] / eq.iloc[0] - 1))
+               total=float(eq.iloc[-1] / eq.iloc[0] - 1), after_tax=after_tax(eq), worst_year=float(yearly.min()))
     if trades is not None and len(trades):
         out.update(trades=int(len(trades)), win=float((trades["net"] > 0).mean()), avg=float(trades["net"].mean()))
     return out
@@ -147,8 +246,9 @@ def _stats(eq: pd.Series, trades: pd.DataFrame | None = None) -> dict:
 def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
     bc = cfg["backtest"]
     if preds is None:
-        preds = apply_plans(walk_forward(cfg, ds, bc["start_year"]), cfg)
+        preds = walk_forward(cfg, ds, bc["start_year"])
         preds = preds[preds["complete"]]
+    preds = with_stops(preds, cfg)
     proxy = cfg["universe"]["market_proxy"]
     m = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna()
     cal = m.index[m.index >= preds["date"].min()]
@@ -178,8 +278,11 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
             crisis_share=float(crisis_days.mean()) if len(crisis_days) else 0.0, events=evs))
     # 平常時/危機局面での1取引あたり成績（AIが選んだ取引）
     weekly = lambda s: [[d.strftime("%Y-%m-%d"), round(float(v))] for d, v in s.resample("W-FRI").last().dropna().items()]
+    pc = cfg["paper_trading"]
     res = dict(
         start=str(cal[0].date()), end=str(cal[-1].date()), cost=cfg["research"]["cost"],
+        account=dict(capital=pc["capital_jpy"], max_positions=pc["max_positions"], picks_per_day=pc["picks_per_day"],
+                     risk_per_trade=pc.get("risk_per_trade"), lot_size=pc["lot_size"], skipped=ai["skipped"]),
         stats=dict(ai=_stats(eq, ai["trades"]), random=_stats(rnd_eq), index=_stats(index)),
         years=years, curve=dict(ai=weekly(eq), random=weekly(rnd_eq), index=weekly(index)),
         crisis_periods=[dict(name=e.name, start=e.start, end=e.end) for e in regimes.EVENTS if e.kind == "crisis"],

@@ -33,10 +33,12 @@ CREATE TABLE IF NOT EXISTS strategy_stats(
 );
 CREATE TABLE IF NOT EXISTS paper_positions(
   id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, signal_date TEXT,
-  status TEXT,  -- pending / open / closed / cancelled
+  status TEXT,  -- pending / open / closed / cancelled / archived（資金設定の変更前の記録）
   entry_date TEXT, entry REAL, shares INTEGER, tp REAL, sl REAL, atr REAL,
   exit_date TEXT, exit REAL, pnl REAL, reason TEXT, prob REAL, days_held INTEGER DEFAULT 0
 );
+-- ペーパートレードの毎日の評価額（含み損益込み）。最高値からの下落を測る
+CREATE TABLE IF NOT EXISTS paper_equity(date TEXT PRIMARY KEY, equity REAL, capital REAL);
 -- その日の通知内容（Webページの「過去の結果」表示用）
 CREATE TABLE IF NOT EXISTS summaries(data_date TEXT PRIMARY KEY, json TEXT);
 CREATE TABLE IF NOT EXISTS runs(
@@ -50,7 +52,7 @@ def connect(path: Path) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(paper_positions)")}
-    for col, typ in (("horizon", "INTEGER"), ("tp_atr", "REAL"), ("sl_atr", "REAL")):
+    for col, typ in (("horizon", "INTEGER"), ("tp_atr", "REAL"), ("sl_atr", "REAL"), ("capital", "REAL")):
         if col not in cols:  # 売買ルールが途中で変わっても、注文した時のルールで手仕舞うため
             con.execute(f"ALTER TABLE paper_positions ADD COLUMN {col} {typ}")
     con.commit()

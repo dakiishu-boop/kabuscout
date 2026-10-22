@@ -101,6 +101,16 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         if gate and gate_active(gate, float(ind["mkt_dev75"].iloc[-1].iloc[0]), float(ind["mkt_ret20"].iloc[-1].iloc[0]), crisis):
             n_new = min(n_new, gate["max_new"])
             events.append(f"地合いが弱いため新規の買いを控えています（{gate['name']}）")
+        cap_sec = pc.get("max_per_sector")
+        if cap_sec and "sector" in cand:  # 同じ業種に偏らないように（研究ループで採用された場合）
+            sec = dict(con.execute("SELECT code, sector33 FROM universe").fetchall())
+            secs = [sec.get(c, "?") for c in held]
+            keep = []
+            for i, r in cand.iterrows():
+                if secs.count(r["sector"]) < cap_sec:
+                    keep.append(i)
+                    secs.append(r["sector"])
+            cand = cand.loc[keep]
         for _, r in cand.head(n_new).iterrows():
             con.execute("INSERT INTO paper_positions(code,name,signal_date,status,atr,prob,tp_atr,sl_atr,horizon,capital) VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (r["code"], r["name"], data_date.strftime("%Y-%m-%d"), "pending", float(r["atr"]),

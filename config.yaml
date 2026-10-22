@@ -123,6 +123,8 @@ research:
   portfolio_grid:
     max_positions: [3, 5, 8, 10, 15]
     picks_per_day: [1, 2, 3]
+    # 同じ業種（東証33業種）を何銘柄まで持つか（0 = 制限なし）
+    max_per_sector: [0, 1, 2]
 
 backtest:
   start_year: 2008

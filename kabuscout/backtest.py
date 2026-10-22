@@ -117,6 +117,16 @@ def with_stops(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return preds.assign(_stop=preds["strategies"].map(k).astype(float) * preds["atr"])
 
 
+def with_sectors(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """同じ業種の保有数の制限に使う業種（東証33業種、銘柄一覧の現在の分類）。"""
+    if "sector" in preds:
+        return preds
+    import sqlite3
+    with sqlite3.connect(str(cfg["data"]["db_path"])) as con:
+        sec = dict(con.execute("SELECT code, sector33 FROM universe").fetchall())
+    return preds.assign(sector=preds["code"].map(sec).fillna("?"))
+
+
 def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0,
              gate: dict | None = "config", max_positions: int | None = None, picks_per_day: int | None = None,
              account: dict | None = None, store=None) -> dict:
@@ -132,7 +142,7 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
     rng = np.random.default_rng(seed)
     if gate == "config":
         gate = pc.get("gate")
-    preds = with_stops(preds, cfg)
+    preds = with_sectors(with_stops(preds, cfg), cfg)
     cal = cal[cal >= preds["date"].min()]
     close = _closes(cfg, preds["code"].unique(), store).reindex(cal).ffill(limit=5)
     cix = {k: j for j, k in enumerate(close.columns)}
@@ -184,18 +194,24 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
             continue
         g = g.sort_values("prob", ascending=False) if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
         held = {p["code"] for p in open_pos}
+        cap_sec = acc.get("max_per_sector") if "sector" in g else None
+        secs = [p.get("sector") for p in open_pos]
         avail = cash
         for _, r in g.head(scan).iterrows():
             if n_new <= 0:
                 break
             if r["code"] in held or r["code"] not in cix:
                 continue
+            if cap_sec and secs.count(r["sector"]) >= cap_sec:  # 同じ業種に偏らないように
+                continue
             n = order_shares(acc, eq, avail, float(r["close"]) * (1 + half_cost), float(r["_stop"]), eq / maxp)
             if n <= 0:  # 単元（100株）で買えない値段・損失の上限で1単元も買えない
                 skipped += 1
                 continue
             entry = float(r["entry"])
-            pending.append(dict(code=r["code"], ci=cix[r["code"]], shares=n, entry=entry, stop=float(r["_stop"]),
+            if cap_sec:
+                secs.append(r["sector"])
+            pending.append(dict(code=r["code"], ci=cix[r["code"]], shares=n, entry=entry, stop=float(r["_stop"]), sector=r.get("sector"),
                                 exit_i=i + int(r["exit_days"]), exit_px=entry * (1 + float(r["ret"]))))
             held.add(r["code"])
             avail -= n * float(r["close"]) * (1 + half_cost)
@@ -248,7 +264,7 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
     if preds is None:
         preds = walk_forward(cfg, ds, bc["start_year"])
         preds = preds[preds["complete"]]
-    preds = with_stops(preds, cfg)
+    preds = with_sectors(with_stops(preds, cfg), cfg)
     proxy = cfg["universe"]["market_proxy"]
     m = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna()
     cal = m.index[m.index >= preds["date"].min()]

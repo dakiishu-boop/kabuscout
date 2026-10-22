@@ -439,15 +439,21 @@ def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex)
     分散を増やすと下落は小さくなりやすいが、AIの上位以外も買うことになるので、どちらが良いかは確かめるしかない。"""
     from . import backtest
     rc, pc = cfg["research"], cfg["paper_trading"]
-    inc = dict(max_positions=pc["max_positions"], picks_per_day=pc["picks_per_day"])
-    variants = [dict(max_positions=m, picks_per_day=k) for m in rc["portfolio_grid"]["max_positions"]
+    sec0 = pc.get("max_per_sector") or 0
+    inc = dict(max_positions=pc["max_positions"], picks_per_day=pc["picks_per_day"], max_per_sector=sec0)
+    variants = [dict(max_positions=m, picks_per_day=k, max_per_sector=sec0) for m in rc["portfolio_grid"]["max_positions"]
                 for k in rc["portfolio_grid"]["picks_per_day"] if k <= m]
+    # 同じ業種は何銘柄まで持つか（現行の保有数のまま）。1業種1銘柄はAIのモデルによって効いたり効かなかったりした（ジャーナル ラウンド9）
+    for sec in rc["portfolio_grid"].get("max_per_sector", []):
+        variants.append(dict(inc, max_per_sector=sec))
     if inc not in variants:
         variants.append(inc)
+    variants = [v for i, v in enumerate(variants) if v not in variants[:i]]
     vault_start = cal[-rc["vault_days"]]
     rows = []
     for v in variants:
-        eq = backtest.simulate(preds, cal, cfg, "ai", **v)["equity"]
+        eq = backtest.simulate(preds, cal, cfg, "ai", max_positions=v["max_positions"], picks_per_day=v["picks_per_day"],
+                               account=dict(max_per_sector=v["max_per_sector"]))["equity"]
         s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
         yr = pd.Series({y: g.iloc[-1] / (s_[s_.index.year < y].iloc[-1] if (s_.index.year < y).any() else s_.iloc[0]) - 1
                         for y, g in s_.groupby(s_.index.year)})
@@ -463,7 +469,8 @@ def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex)
         # 年率が下がらず（t>0）、最大下落が小さいものを優先: 年率の改善の t 値で選ぶ
         if r["t"] is not None and r["t"] > t_best:
             best, t_best = r, r["t"]
-    name = lambda v: f"同時{v['max_positions']}銘柄・1日{v['picks_per_day']}銘柄まで"
+    name = lambda v: (f"同時{v['max_positions']}銘柄・1日{v['picks_per_day']}銘柄まで"
+                      + (f"・同じ業種{v['max_per_sector']}銘柄まで" if v.get("max_per_sector") else ""))
     res = dict(incumbent=name(inc), trials=len(variants), cum_trials=cum, t_needed=t_needed, adopted=False,
                table=[dict(name=name(r["v"]), cagr=r["stats"]["cagr"], max_dd=r["stats"]["max_dd"], vault=r["vault"],
                            pos_years=float((r["yearly"] > 0).mean()), t=r["t"]) for r in rows])

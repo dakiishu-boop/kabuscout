@@ -146,6 +146,7 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     scored = learner.score(today, bundle, weights)
     top = scored.head(cfg["screening"]["top_n"]).copy()
     top["name"] = top["code"].map(names).fillna("")
+    top["sector"] = top["code"].map(dict(zip(uni["code"], uni["sector33"]))).fillna("?")
     top["reasons"] = [reasons(r, r["strategies"].split(",")) for _, r in top.iterrows()]
     plans = [plan_for(k.split(","), cfg["labeling"]) for k in top["strategies"]]
     top["tp_atr"] = [p["tp_atr"] for p in plans]

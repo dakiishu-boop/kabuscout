@@ -516,7 +516,9 @@ def _judge(con, cfg: dict, key: str, label: str, inc_row: dict, rows: list[dict]
     rc = cfg["research"]
     prev = con.execute("SELECT COALESCE(SUM(trials),0) FROM research_log WHERE strategy=?", (key,)).fetchone()[0]
     cum = int(prev + len(rows))
-    t_needed = NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1))
+    # AIのモデル同士の比較は、乱数の種を変えただけでも t が 2 前後になることがある（ジャーナル ラウンド9）ので、
+    # 試行回数が少なくても合格ラインは min_t_model（既定2.5）を下回らないようにする
+    t_needed = max(NormalDist().inv_cdf(1 - rc["alpha"] / max(cum, 1)), rc.get("min_t_model", 2.5))
     best, t_best = None, -9.0
     for r in rows:
         d = (r["yearly"] - inc_row["yearly"]).dropna()

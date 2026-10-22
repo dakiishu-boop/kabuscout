@@ -134,10 +134,15 @@ def model_params(cfg: dict) -> dict:
     return cfg["learning"].get("model_params") or CANDIDATES[0]
 
 
-def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features: list[str] | None = None) -> dict:
-    """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。features で特徴量を差し替えて比較できる。"""
+def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features: list[str] | None = None,
+               seeds: int = 1) -> dict:
+    """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。features で特徴量を差し替えて比較できる。
+    seeds>1 なら乱数の種を変えたモデルを複数作り、予測を平均する（本番用。研究の比較は時間の都合で1つ）。"""
     params = params or model_params(cfg)
     features = features or model_features(cfg)
+    if seeds > 1:
+        return dict(members=[fit_models(tr, cfg, dict(params, random_state=42 + k), features) for k in range(seeds)],
+                    features=features)
     X, w = tr[features], _weights(tr, cfg["learning"])
     lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
     return dict(
@@ -148,12 +153,20 @@ def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features
     )
 
 
+def _parts(models: dict, df: pd.DataFrame) -> pd.DataFrame:
+    """3つのモデルの生の予測（複数の種があれば平均）。"""
+    if "members" in models:
+        ps = [_parts(m, df) for m in models["members"]]
+        return sum(ps) / len(ps)
+    X = df[models.get("features", MODEL_FEATURES)]
+    return pd.DataFrame({"win": models["win"].predict_proba(X)[:, 1], "ret": models["ret"].predict(X),
+                         "rank": models["rank"].predict(X)}, index=df.index)
+
+
 def predict(models: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """(勝率予測, AIの評価)。AIの評価は、3つのモデルの予測それぞれの「同じ日の候補内での順位」の平均（0〜1）。"""
-    X = df[models.get("features", MODEL_FEATURES)]
-    prob = models["win"].predict_proba(X)[:, 1]
-    parts = pd.DataFrame({"win": prob, "ret": models["ret"].predict(X), "rank": models["rank"].predict(X)}, index=df.index)
-    return prob, parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()
+    parts = _parts(models, df)
+    return parts["win"].to_numpy(), parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()
 
 
 def bundle_predict(bundle: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -275,7 +288,8 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     split = dates[int(len(dates) * (1 - lc["holdout_fraction"]))]
     purge_end = dates[max(0, np.searchsorted(dates, split) - H)]  # ラベル期間の重複を除去
     tr, ho = d[d["date"] < purge_end], d[d["date"] >= split]
-    models = fit_models(tr, cfg)
+    seeds = int(cfg["learning"].get("seeds", 1))
+    models = fit_models(tr, cfg, seeds=seeds)
     prob, sc = predict(models, ho)
     best_met = _evaluate(ev(ho), sc, prob)
     log.info("  未知期間: AUC %.3f / 日次上位勝率 %.1f%% / 期待値 %+.2f%%（全体 %+.2f%%）",
@@ -303,10 +317,10 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
             verdict = "比較期間不足のため最新データで更新"
 
     # 全データで再学習して本番モデルに
-    final = fit_models(d, cfg)
+    final = fit_models(d, cfg, seeds=seeds)
     sample = ho.sample(min(4000, len(ho)), random_state=0)
     feats = model_features(cfg)
-    pi = permutation_importance(models["win"], sample[feats], sample["label"],
+    pi = permutation_importance((models["members"][0] if "members" in models else models)["win"], sample[feats], sample["label"],
                                 n_repeats=3, random_state=0, scoring="roc_auc")
     imp = sorted(zip(feats, pi.importances_mean), key=lambda t: -t[1])[:12]
 
@@ -317,7 +331,7 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     alpha = ai_weight(best_met)
     version = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d-%H%M")
     best_met.update(alpha=alpha, verdict=verdict, importance=[(k, float(v)) for k, v in imp],
-                    train_n=int(len(d)), holdout_from=str(split)[:10], targets=list(final))
+                    train_n=int(len(d)), holdout_from=str(split)[:10], targets=["win", "ret", "rank"], seeds=seeds)
     path = cfg["data"]["model_dir"] / f"model_{version}.joblib"
     bundle = dict(models=final, features=model_features(cfg), version=version, alpha=alpha,
                   metrics=best_met, data_end=data_end)

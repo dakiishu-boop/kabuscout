@@ -107,6 +107,8 @@ def parse_doc(content: bytes) -> pd.DataFrame:
                 m = re.match(r"(CurrentYear|Prior\dYear)(Duration|Instant)(_NonConsolidatedMember)?$", str(r["context"]))
                 if not m:
                     continue
+                if m.group(1) not in YEARS_BACK:  # 6期以上前の値が載っている書類もある（使わない）
+                    continue
                 k = YEARS_BACK[m.group(1)]
                 nonc = bool(m.group(3))
                 try:

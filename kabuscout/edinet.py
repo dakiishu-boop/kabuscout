@@ -71,7 +71,7 @@ def _get(url: str, params: dict, tries: int = 3):
                 return r
             log.warning("EDINET %s: HTTP %s %s", url.rsplit("/", 1)[-1], r.status_code, r.text[:200].replace("\n", " "))
         except Exception as e:
-            log.warning("EDINET 通信エラー: %s", e)
+            log.warning("EDINET 通信エラー: %s", str(e).replace(_key() or "\0", "***"))  # URL に含まれるキーを伏せる
         time.sleep(5 * (a + 1))
     return None
 

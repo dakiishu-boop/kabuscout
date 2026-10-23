@@ -14,7 +14,7 @@ import pandas as pd
 import yfinance as yf
 
 from .data import PriceStore
-from . import data, earnings, edinet, flows, jquants, learner, macro, notify, paper, pool, regimes, report, site, tdnet
+from . import data, earnings, edinet, flows, jquants, learner, macro, notify, paper, pool, regimes, report, site, tdnet, tdnet_xbrl
 from .db import connect
 from .strategies import apply_flags, load_params, plan_for, reasons
 
@@ -279,7 +279,8 @@ def collect_extra(cfg: dict, uni: pd.DataFrame) -> None:
                      ("需給データ", lambda: flows.collect(cfg)),
                      ("適時開示", lambda: tdnet.update(cfg, max_minutes=lim)),
                      ("財務データ", lambda: edinet.update(cfg, max_minutes=20)),
-                     ("J-Quants 決算サマリ", lambda: jquants.update_fins(cfg, max_minutes=20))):
+                     ("J-Quants 決算サマリ", lambda: jquants.update_fins(cfg, max_minutes=20)),
+                     ("決算短信の数値（TDnet XBRL）", lambda: tdnet_xbrl.update(cfg, days=30, max_minutes=20))):
         try:
             fn()
         except Exception as e:

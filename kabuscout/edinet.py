@@ -243,3 +243,60 @@ def wide_features(fin: pd.DataFrame | None, close: pd.DataFrame) -> dict[str, pd
     out["sales_growth"] = vals["sales_growth"].clip(-1, 5)
     out["profit_growth"] = vals["profit_growth"].clip(-5, 10)
     return {k: v.astype("float32") for k, v in out.items()}
+
+
+# ---------------------------------------------------------------- 大量保有報告書（5%ルール）
+HOLDING_TYPES = {"350", "360"}  # 大量保有報告書・変更報告書 / その訂正
+
+
+def _holding_paths(cfg):
+    d = _paths(cfg)[0].parent
+    return d / "holdings.parquet", d / "edinet_codes.parquet", d / "holdings_state.json"
+
+
+def update_holdings(cfg: dict, max_minutes: float = 60, start: str = "2014-06-01") -> dict:
+    """書類一覧を日付順にたどり、大量保有報告書（対象会社 = issuerEdinetCode）と、EDINETコード→証券コードの対応を貯める。
+    書類の中身（保有割合など）はまだ取らない。途中で止まっても100日ごとに保存する。"""
+    if not _key():
+        return dict(skipped=True)
+    hp, cp, sp = _holding_paths(cfg)
+    state = json.loads(sp.read_text()) if sp.exists() else {"listed_until": start}
+    hold = [pd.read_parquet(hp)] if hp.exists() else []
+    codes = [pd.read_parquet(cp)] if cp.exists() else []
+    d, today, t0 = pd.Timestamp(state["listed_until"]), pd.Timestamp.today().normalize(), time.time()
+    cols = ["docID", "docTypeCode", "docDescription", "filerName", "edinetCode", "issuerEdinetCode", "submitDateTime",
+            "parentDocID", "withdrawalStatus", "csvFlag"]
+
+    def save():
+        if hold:
+            pd.concat(hold, ignore_index=True).drop_duplicates("docID").to_parquet(hp)
+        if codes:
+            pd.concat(codes, ignore_index=True).drop_duplicates("edinetCode", keep="last").to_parquet(cp)
+        sp.write_text(json.dumps(state))
+
+    n = 0
+    while d <= today and time.time() - t0 < max_minutes * 60:
+        if d.weekday() >= 5:
+            d += pd.Timedelta(days=1)
+            continue
+        r = _get(f"{API}/documents.json", {"date": d.strftime("%Y-%m-%d"), "type": 2})
+        if r is None:
+            break
+        df = pd.DataFrame(r.json().get("results") or [])
+        if len(df):
+            h = df[df["docTypeCode"].isin(HOLDING_TYPES)]
+            if len(h):
+                hold.append(h[[c for c in cols if c in h]].assign(list_date=d))
+            c = df[df["secCode"].notna() & df["edinetCode"].notna()][["edinetCode", "secCode"]]
+            if len(c):
+                codes.append(c.assign(code=c["secCode"].str[:4]).drop_duplicates("edinetCode"))
+        d += pd.Timedelta(days=1)
+        state["listed_until"] = d.strftime("%Y-%m-%d")
+        n += 1
+        if n % 100 == 0:
+            save()
+        time.sleep(1.0)
+    save()
+    h = pd.concat(hold, ignore_index=True) if hold else pd.DataFrame()
+    log.info("大量保有報告書: 書類一覧 %s まで / %d件", state["listed_until"], len(h))
+    return dict(listed_until=state["listed_until"], reports=int(len(h)))

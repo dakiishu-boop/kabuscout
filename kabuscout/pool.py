@@ -16,14 +16,14 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import data, dividends, earnings, edinet, events, jquants, learner, macro, regimes, tdnet
+from . import data, dividends, earnings, edinet, events, forecast, jquants, learner, macro, regimes, tdnet
 from .indicators import CANDIDATE_FEATURES, FEATURES, RAW_FIELDS, compute
 from .strategies import detect_all, loose_params
 
 log = logging.getLogger(__name__)
-POOL_VERSION = 11
+POOL_VERSION = 12
 FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES + events.EVENT_FEATURES
-                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES + CANDIDATE_FEATURES))
+                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + forecast.FC_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES + CANDIDATE_FEATURES))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
 RECENT_DAYS = 200    # 毎日計算し直す直近期間（暦日）
 
@@ -76,6 +76,7 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     ind.update(dividends.wide_features(store.load_dividends(codes=list(ind["close"].columns)), ind["close"]))
     px = ind.get("px_actual", ind["close"])  # 1株あたりの財務の値（報告書の値）は、分割前の実際の株価と比べる
     ind.update(edinet.wide_features(edinet.load(cfg), px))
+    ind.update(forecast.wide_features(forecast.predictions(cfg, store, uni), ind["close"]))  # 自前の利益の予想（調整後の株価で時価総額）
     ind.update(macro.wide_features(macro.load(cfg), ind["close"]))
     ind.update(jquants.wide_features(jquants.load_fins(cfg), px, cfg.get("jquants", {}).get("lag_days", 84)))
     ind = {k: v.astype("float32") for k, v in ind.items()}

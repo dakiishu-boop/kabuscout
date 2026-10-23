@@ -28,7 +28,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -87,10 +87,14 @@ def main(argv=None):
         r = survivorship.collect(cfg, max_minutes=a.budget_min or 60)
         if r.get("fetched") and r["fetched"] >= r.get("delisted", 0):
             survivorship.analyze(cfg)
+    elif a.command == "evaluate-forecast":  # 自前の利益の予想（益回り）が効くかの確認
+        from . import evaluate
+        from .forecast import FC_FEATURES
+        evaluate.run(cfg, "forecast", FC_FEATURES, start_year=2016)
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
-    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train", "evaluate-edinet", "prices"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
+    if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train", "evaluate-edinet", "prices", "evaluate-forecast"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
         from . import site
         site.build(connect(cfg["data"]["db_path"]), cfg)
 

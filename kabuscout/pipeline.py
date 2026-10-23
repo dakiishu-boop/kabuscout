@@ -144,6 +144,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
 
     # ---- 今日の候補
     today = ds[ds["date"] == last].copy()
+    from . import alerts
+    danger = alerts.load(cfg, pd.Timestamp.today())  # 監理・整理銘柄と上場廃止予定は買わない（生存者バイアスの穴を本番で塞ぐ）
+    if danger and today["code"].isin(danger).any():
+        log.info("上場廃止のおそれがある銘柄を候補から除外: %s", ", ".join(f"{c}（{danger[c]}）" for c in today["code"] if c in danger))
+        today = today[~today["code"].isin(danger)]
     scored = learner.score(today, bundle, weights)
     top = scored.head(cfg["screening"]["top_n"]).copy()
     top["name"] = top["code"].map(names).fillna("")

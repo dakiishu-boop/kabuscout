@@ -75,8 +75,8 @@ def add_market(cfg: dict, f: pd.DataFrame, close: pd.DataFrame, uni: pd.DataFram
 
 def walk_forward(f: pd.DataFrame, start_year: int = 2016, params: dict | None = None) -> pd.DataFrame:
     """年ごとに学習し直して予想する（その年の1月1日より前に答えが分かっていた期だけで学習）。"""
-    p = dict(max_iter=400, learning_rate=0.03, max_leaf_nodes=15, min_samples_leaf=100, l2_regularization=1.0,
-             categorical_features="from_dtype", random_state=42, **(params or {}))
+    p = {**dict(max_iter=400, learning_rate=0.03, max_leaf_nodes=15, min_samples_leaf=100, l2_regularization=1.0,
+                categorical_features="from_dtype", random_state=42), **(params or {})}
     out = []
     for y in range(start_year, int(f["known"].dt.year.max()) + 1):
         cut = pd.Timestamp(f"{y}-01-01")

@@ -61,6 +61,8 @@ def load_config(path: Path | None = None) -> dict:
             cfg["learning"]["model_params"] = saved["model_params"]
         if saved.get("extra_features"):  # 研究ループが採用した候補の特徴量
             cfg["learning"]["extra_features"] = saved["extra_features"]
+        if saved.get("specialists"):  # 研究ループが採用した専門モデル
+            cfg["learning"]["specialists"] = saved["specialists"]
         if "weak_consensus" in saved:  # 研究ループが切り替えた「弱い相場の合意モード」
             cfg["paper_trading"]["weak_consensus"] = saved["weak_consensus"]
     return cfg

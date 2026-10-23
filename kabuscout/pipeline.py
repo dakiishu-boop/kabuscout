@@ -224,7 +224,7 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         log.info("売買ルールを更新: %s → シグナル表を作り直します", summary["plan"]["candidate"])
         pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
     ds = dataset(cfg, pl)
-    ms = fs = None
+    ms = fs = sp = None
     if research:  # AIのモデル設定（正則化の強さ）の研究。勝った設定の過去ペーパートレードの予測をそのまま使う
         proxy = cfg["universe"]["market_proxy"]
         cal = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index
@@ -233,8 +233,13 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
             from .config import load_config
             cfg = load_config()
         fs = rs.feature_search(con, cfg, ds, cal, ms.pop("_row"))
-        ms["_preds"] = fs.pop("_preds")
         if fs["adopted"]:
+            from .config import load_config
+            cfg = load_config()
+        sp = rs.specialist_search(con, cfg, ds, cal, fs.pop("_row"))
+        fs.pop("_preds")
+        ms["_preds"] = sp.pop("_preds")
+        if sp["adopted"]:
             from .config import load_config
             cfg = load_config()
     if research:  # 週1回は必ず再学習（新旧モデルの対決は train 内で行う）
@@ -251,11 +256,13 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
             j["gate"], j["portfolio"], j["weak_consensus"] = g, pf, wc
             j["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
             j["features"] = fs if research else None
+            j["specialists"] = sp
             rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
         if summary is not None:
             summary["gate"], summary["portfolio"], summary["weak_consensus"] = g, pf, wc
             summary["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
             summary["features"] = fs
+            summary["specialists"] = sp
         if g["adopted"] or pf["adopted"] or wc["adopted"]:
             from .config import load_config
             cfg = load_config()

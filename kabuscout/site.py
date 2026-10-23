@@ -107,7 +107,7 @@ def collect(con, cfg: dict) -> dict:
                     core_share=float((cfg["paper_trading"].get("core") or {}).get("share") or 0),
                     # 研究ループが採用した、今使っているルール（手元の検証を本番と揃えるためにも公開する）
                     plans=cfg["labeling"].get("per_strategy") or {}, model_params=cfg["learning"].get("model_params"),
-                    extra_features=cfg["learning"].get("extra_features") or [], seeds=cfg["learning"].get("seeds", 1),
+                    extra_features=cfg["learning"].get("extra_features") or [], specialists=cfg["learning"].get("specialists") or [], seeds=cfg["learning"].get("seeds", 1),
                     max_per_sector=cfg["paper_trading"].get("max_per_sector"),
                     crisis_weight=cfg["learning"].get("crisis_weight", 0.3)),
     )

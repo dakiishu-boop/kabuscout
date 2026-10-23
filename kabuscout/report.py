@@ -251,6 +251,9 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
     F = (summary or {}).get("features")
     if F and F.get("trials"):
         embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if F['adopted'] else '・'} **AIの特徴量**（{F['trials']}通り／累計{F['cum_trials']}）: {F['reason']}")[:4000]
+    P = (summary or {}).get("specialists")
+    if P and P.get("trials"):
+        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if P['adopted'] else '・'} **専門モデル**（{P['trials']}通り／累計{P['cum_trials']}）: {P['reason']}")[:4000]
     W = (summary or {}).get("weak_consensus")
     if W and W.get("trials"):
         embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if W['adopted'] else '・'} **弱い相場の合意モード**（{W['trials']}通り／累計{W['cum_trials']}）: {W['reason']}")[:4000]

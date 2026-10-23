@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 
 def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[str] | None = None,
-                 params: dict | None = None) -> pd.DataFrame:
+                 params: dict | None = None, specialists: list[str] | None = None) -> pd.DataFrame:
     """1年ずつ、その年より前のデータだけで本番と同じAI（3つの学習目標）を作って判定する。
     返す ret / label / exit_days は、実際に使う売買ルール（戦略ごと）での結果。"""
     H = learner.plan_horizon(cfg)
@@ -45,7 +45,7 @@ def walk_forward(cfg: dict, ds: pd.DataFrame, start_year: int, features: list[st
         te = d[d["date"].dt.year == y]
         if te.empty:
             continue
-        models = learner.fit_models(tr, cfg, params=params, features=features)
+        models = learner.fit_models(tr, cfg, params=params, features=features, specialists_=specialists)
         prob, sc = learner.predict(models, te)
         out.append(te.assign(prob=sc, win_prob=prob, agreement=learner.agreement(models, te)))
         log.info("  %d年: %d件で学習 → %d件を判定", y, len(tr), len(te))
@@ -217,7 +217,9 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
                 continue
             if cap_sec and secs.count(r["sector"]) >= cap_sec:  # 同じ業種に偏らないように
                 continue
-            n = order_shares(acc, eq, avail, float(r["close"]) * (1 + half_cost), float(r["_stop"]), eq / maxp)
+            sz = float(r["_size"]) if "_size" in r and np.isfinite(r["_size"]) else 1.0  # 研究用: 自信の度合いで買う量を変える
+            a_ = acc if sz == 1.0 else {**acc, "risk_per_trade": (acc.get("risk_per_trade") or 0) * sz}
+            n = order_shares(a_, eq, avail, float(r["close"]) * (1 + half_cost), float(r["_stop"]), eq / maxp * sz)
             if n <= 0:  # 単元（100株）で買えない値段・損失の上限で1単元も買えない
                 skipped += 1
                 continue

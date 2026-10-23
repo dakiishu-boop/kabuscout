@@ -503,7 +503,8 @@ def portfolio_search(con, cfg: dict, preds: pd.DataFrame, cal: pd.DatetimeIndex)
     return res
 
 
-def _wf_row(cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, params: dict | None = None, features: list[str] | None = None) -> dict:
+def _wf_row(cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, params: dict | None = None, features: list[str] | None = None,
+            specialists: list[str] | None = None) -> dict:
     """ウォークフォワードで過去ペーパートレードをして、金庫より前の年ごとの成績と金庫期間の成績を返す。
     乱数の種だけでも年ごとの成績が大きくぶれる（ラウンド9）ので、research.compare_seeds 個の種の平均で比べる。
     返す予測（preds）は最初の種のもの（続く過去ペーパートレードに使う）。"""
@@ -513,7 +514,7 @@ def _wf_row(cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, params: dict | N
     runs = []
     for k in range(int(cfg["research"].get("compare_seeds", 1))):
         p = dict(base, random_state=42 + k)
-        pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=p, features=features)
+        pr = backtest.walk_forward(cfg, ds, cfg["backtest"]["start_year"], params=p, features=features, specialists=specialists)
         pr = backtest.with_sectors(backtest.with_stops(pr[pr["complete"]], cfg), cfg)
         eq = backtest.simulate(pr, cal[cal >= pr["date"].min()], cfg, "ai")["equity"]
         s_, vt = eq[eq.index < vault_start], eq[eq.index >= vault_start]
@@ -610,7 +611,7 @@ def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_
     recent = ds[ds["date"] >= ds["date"].max() - pd.Timedelta(days=365 * 8)]
     groups = {k: v for k, v in groups.items() if all(f in recent and recent[f].notna().mean() >= 0.3 for f in v)}
     if not groups:
-        return dict(adopted=False, reason="候補なし（すべて採用済み）", trials=0, cum_trials=0, _preds=inc_row["preds"])
+        return dict(adopted=False, reason="候補なし（すべて採用済み）", trials=0, cum_trials=0, _preds=inc_row["preds"], _row=inc_row)
     base = learner.model_features(cfg)
     rows = [dict(_wf_row(cfg, ds, cal, features=base + [f for f in v if f not in base]), g=k, add=v) for k, v in groups.items()]
     name = lambda r: ("現行の特徴量" if "g" not in r else f"＋{r['g']}（{len(r['add'])}個）")
@@ -618,11 +619,35 @@ def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_
         log.info("  特徴量 %s: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", name(r), r["stats"]["cagr"] * 100,
                  r["stats"]["max_dd"] * 100, r["vault"] * 100)
     res = _judge(con, cfg, "_features", "AIの特徴量", inc_row, rows, name)
-    preds = inc_row["preds"]
+    preds, row = inc_row["preds"], inc_row
     if res["adopted"]:
         w = res.pop("winner")
         res["candidate"] = sorted(have | set(w["add"]))
         _save_param(cfg, "extra_features", res["candidate"], "AIの特徴量")
+        preds, row = w["preds"], w
+    res["_preds"], res["_row"] = preds, row
+    return res
+
+
+def specialist_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_row: dict) -> dict:
+    """専門モデル（その戦略のシグナルだけで学ぶモデル）を加えるかを、同じ安全装置で判定する（ジャーナル 50）。
+    手元の検証（2016〜2026年・4つの種）では決算好反応の専門モデルで年率・最大下落・最悪の年がすべて改善したが、
+    決めるのに使っていない 2008〜2015年 では差が無かった（当時は学習データが少ない）ので、ここで判定させる。"""
+    from .strategies import STRATEGY_NAMES
+    have = learner.specialists(cfg)
+    cands = [k for k in learner.SPECIALIST_CANDIDATES if k not in have]
+    if not cands:
+        return dict(adopted=False, reason="候補なし（すべて採用済み）", trials=0, cum_trials=0, _preds=inc_row["preds"])
+    rows = [dict(_wf_row(cfg, ds, cal, specialists=have + [k]), k=k) for k in cands]
+    name = lambda r: "現行" if "k" not in r else f"＋専門モデル（{STRATEGY_NAMES.get(r['k'], r['k'])}）"
+    for r in rows:
+        log.info("  %s: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", name(r), r["stats"]["cagr"] * 100, r["stats"]["max_dd"] * 100, r["vault"] * 100)
+    res = _judge(con, cfg, "_specialists", "専門モデル", inc_row, rows, name)
+    preds = inc_row["preds"]
+    if res["adopted"]:
+        w = res.pop("winner")
+        res["candidate"] = have + [w["k"]]
+        _save_param(cfg, "specialists", res["candidate"], "専門モデル")
         preds = w["preds"]
     res["_preds"] = preds
     return res

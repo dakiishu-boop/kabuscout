@@ -157,23 +157,43 @@ def model_params(cfg: dict) -> dict:
     return cfg["learning"].get("model_params") or CANDIDATES[0]
 
 
+SPECIALIST_MIN = 5000  # 専門モデルを作るのに必要なシグナル数（2010年より前は決算日のデータが少なく、作らない）
+SPECIALIST_CANDIDATES = ["earnings_drift"]  # 研究ループが判定する専門モデル（成績の柱の決算好反応だけ。選び過ぎを避けて事前に決めた1つ）
+
+
+def specialists(cfg: dict) -> list[str]:
+    """採用済みの専門モデル（毎週の研究ループが判定して保存したもの）。"""
+    return list(cfg["learning"].get("specialists") or [])
+
+
 def fit_models(tr: pd.DataFrame, cfg: dict, params: dict | None = None, features: list[str] | None = None,
-               seeds: int = 1) -> dict:
+               seeds: int = 1, specialists_: list[str] | None = None) -> dict:
     """3つの学習目標でモデルを作る。tr には with_plan_outcomes の列が必要。features で特徴量を差し替えて比較できる。
-    seeds>1 なら乱数の種を変えたモデルを複数作り、予測を平均する（本番用。研究の比較は時間の都合で1つ）。"""
+    seeds>1 なら乱数の種を変えたモデルを複数作り、予測を平均する（本番用。研究の比較は時間の都合で1つ）。
+    specialists_（既定は採用済みのもの）: その戦略のシグナルだけで学ぶ専門モデルも作る（ジャーナル 50）。"""
     params = params or model_params(cfg)
     features = features or model_features(cfg)
+    specs = specialists(cfg) if specialists_ is None else specialists_
     if seeds > 1:
-        return dict(members=[fit_models(tr, cfg, dict(params, random_state=42 + k), features) for k in range(seeds)],
-                    features=features)
-    X, w = tr[features], _weights(tr, cfg["learning"])
-    lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
-    return dict(
-        win=_fit(params, X, tr["label"], w),
-        ret=_fit(params, X, tr["ret_plan"].clip(lo, hi) - cfg["research"]["cost"], w, reg=True),
-        rank=_fit(params, X, tr.groupby("date")["ret_plan"].rank(pct=True) - 0.5, w, reg=True),
-        features=features,
-    )
+        out = dict(members=[fit_models(tr, cfg, dict(params, random_state=42 + k), features, specialists_=[]) for k in range(seeds)],
+                   features=features)
+    else:
+        X, w = tr[features], _weights(tr, cfg["learning"])
+        lo, hi = tr["ret_plan"].quantile([0.01, 0.99])  # 極端な値に引っ張られないように
+        out = dict(
+            win=_fit(params, X, tr["label"], w),
+            ret=_fit(params, X, tr["ret_plan"].clip(lo, hi) - cfg["research"]["cost"], w, reg=True),
+            rank=_fit(params, X, tr.groupby("date")["ret_plan"].rank(pct=True) - 0.5, w, reg=True),
+            features=features,
+        )
+    spec = {}
+    for k in specs:
+        sub = tr[tr[f"s_{k}"] == 1] if f"s_{k}" in tr else tr.iloc[:0]
+        if len(sub) >= SPECIALIST_MIN:
+            spec[k] = fit_models(sub, cfg, params, features, seeds, specialists_=[])
+    if spec:
+        out["spec"] = spec
+    return out
 
 
 def _parts(models: dict, df: pd.DataFrame) -> pd.DataFrame:
@@ -189,7 +209,32 @@ def _parts(models: dict, df: pd.DataFrame) -> pd.DataFrame:
 def predict(models: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """(勝率予測, AIの評価)。AIの評価は、3つのモデルの予測それぞれの「同じ日の候補内での順位」の平均（0〜1）。"""
     parts = _parts(models, df)
-    return parts["win"].to_numpy(), parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()
+    sc = parts.groupby(df["date"].to_numpy()).rank(pct=True).mean(axis=1).to_numpy()
+    for k, sm in (models.get("spec") or {}).items():
+        sc = _with_specialist(sm, df, sc, f"s_{k}")
+    return parts["win"].to_numpy(), sc
+
+
+def _with_specialist(sm: dict, df: pd.DataFrame, sc: np.ndarray, flag: str) -> np.ndarray:
+    """その戦略の候補どうしの並び順だけを「全体のAIの順位と専門モデルの順位の平均」で並べ直す。
+    その戦略の候補が占めていた評価の値をそのまま配り直すので、他の戦略との配分は変わらない（ジャーナル 50）。"""
+    if flag not in df:
+        return sc
+    mask = (df[flag] == 1).to_numpy()
+    if not mask.any():
+        return sc
+    sub = df[mask]
+    dates = sub["date"].to_numpy()
+    sp = _parts(sm, sub).groupby(dates).rank(pct=True).mean(axis=1).to_numpy()
+    g = pd.DataFrame({"d": dates, "v": sc[mask], "sp": sp})
+    g["new"] = 0.5 * g.groupby("d")["v"].rank(pct=True) + 0.5 * g.groupby("d")["sp"].rank(pct=True)
+    out = g["v"].to_numpy().copy()
+    for _, x in g.groupby("d"):
+        pos = x.index.to_numpy()
+        out[pos[np.argsort(x["new"].to_numpy(), kind="stable")]] = np.sort(x["v"].to_numpy())
+    sc = sc.copy()
+    sc[mask] = out
+    return sc
 
 
 def agreement(models: dict, df: pd.DataFrame) -> np.ndarray:

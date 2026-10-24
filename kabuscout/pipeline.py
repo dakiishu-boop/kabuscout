@@ -194,11 +194,14 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     return dict(date=data_date, top=top, n_signals=len(today))
 
 
-def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None, notify_on=True, collect: bool = True) -> None:
-    """週末用: 研究ループ → （条件が変わったら）再学習 → 過去ペーパートレード → Webページ → 通知。"""
+def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None, notify_on=True, collect: bool = True,
+                 part: str = "main") -> None:
+    """週末用: 研究ループ → （条件が変わったら）再学習 → 過去ペーパートレード → Webページ → 通知。
+    part="main"（土曜）: データ収集・戦略の条件・売買ルール・AIのモデル設定・再学習・過去ペーパートレード・地合いなど。
+    part="ai"（日曜）: AIの特徴量と専門モデルの研究（GitHub の6時間の上限に収めるため土曜と分けた。ジャーナル 52）。"""
     from . import backtest, research as rs
     con = connect(cfg["data"]["db_path"])
-    if research and collect:  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
+    if research and collect and part == "main":  # 週末は時間に余裕があるので、追加データの初回の大量取得をここで進める
         uni = data.refresh_universe(con, cfg)
         data.update_prices(store_of(cfg), uni["code"].tolist() + [cfg["universe"]["market_proxy"]], cfg)
         macro.update(cfg)
@@ -214,7 +217,7 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     pl = pool.load(cfg)
     if pl is None:  # 定義が変わった（新しいデータ列など）ときは作り直す
         pl = pool.build_full(store_of(cfg), cfg, data.refresh_universe(con, cfg))
-    summary = rs.run(con, cfg, trials=trials, budget_min=budget_min) if research else None
+    summary = rs.run(con, cfg, trials=trials, budget_min=budget_min) if research and part == "main" else None
     if summary:
         # 研究で採用された条件・売買ルールをこの後の再学習と過去ペーパートレードに反映するため、設定を読み直す
         from .config import load_config
@@ -228,33 +231,11 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     if research:  # AIのモデル設定（正則化の強さ）の研究。勝った設定の過去ペーパートレードの予測をそのまま使う
         proxy = cfg["universe"]["market_proxy"]
         cal = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index
-        # 実行時間（GitHub の上限6時間）に収めるため、重いAIの研究は3週に1回ずつ順番に行う（ジャーナル 52）。
-        # 2026-10-24 の週は、全部を行うと5時間23分かかり上限に迫った
-        turn = int(pd.Timestamp.today().isocalendar().week) % 3
-        skip = lambda row: dict(adopted=False, reason="今週は対象外（3週に1回）", trials=0, cum_trials=0, _row=row, _preds=row["preds"])
-        if turn == 0:
-            ms = rs.model_search(con, cfg, ds, cal)
-            if ms["adopted"]:
-                from .config import load_config
-                cfg = load_config()
-            row = ms.pop("_row")
-        else:
-            row = rs._wf_row(cfg, ds, cal)
-            ms = skip(row)
-            ms.pop("_row")
-        if turn == 1:
-            fs = rs.feature_search(con, cfg, ds, cal, row)
-            if fs["adopted"]:
-                from .config import load_config
-                cfg = load_config()
-            row = fs.pop("_row")
-            fs.pop("_preds")
-        else:
-            fs = {k: v for k, v in skip(row).items() if not k.startswith("_")}
-        sp = rs.specialist_search(con, cfg, ds, cal, row) if turn == 2 else skip(row)
-        sp.pop("_row", None)
-        ms["_preds"] = sp.pop("_preds")
-        if sp["adopted"]:
+        if part == "ai":
+            return _research_ai(cfg, con, ds, pl, cal, notify_on)
+        ms = rs.model_search(con, cfg, ds, cal)
+        ms.pop("_row")
+        if ms["adopted"]:
             from .config import load_config
             cfg = load_config()
     if research:  # 週1回は必ず再学習（新旧モデルの対決は train 内で行う）
@@ -270,14 +251,10 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
             j = json.loads(rj.read_text())
             j["gate"], j["portfolio"], j["weak_consensus"] = g, pf, wc
             j["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
-            j["features"] = fs if research else None
-            j["specialists"] = sp
             rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
         if summary is not None:
             summary["gate"], summary["portfolio"], summary["weak_consensus"] = g, pf, wc
             summary["model"] = {k: v for k, v in (ms or {}).items() if k != "_preds"} or None
-            summary["features"] = fs
-            summary["specialists"] = sp
         if g["adopted"] or pf["adopted"] or wc["adopted"]:
             from .config import load_config
             cfg = load_config()
@@ -285,6 +262,34 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     site.build(con, cfg)
     if notify_on:
         notify.send_research(cfg, summary, bt)
+
+
+def _research_ai(cfg: dict, con, ds: pd.DataFrame, pl: pd.DataFrame, cal: pd.DatetimeIndex, notify_on: bool) -> None:
+    """日曜: AIの特徴量と専門モデルを、現行と同じ安全装置で判定する。採用があれば再学習・過去ペーパートレードもやり直す。"""
+    from . import backtest, research as rs
+    from .config import load_config
+    row = rs._wf_row(cfg, ds, cal)
+    fs = rs.feature_search(con, cfg, ds, cal, row)
+    if fs["adopted"]:
+        cfg = load_config()
+    sp = rs.specialist_search(con, cfg, ds, cal, fs.pop("_row"))
+    fs.pop("_preds")
+    preds = sp.pop("_preds")
+    if sp["adopted"]:
+        cfg = load_config()
+    if fs["adopted"] or sp["adopted"]:
+        learner.train(con, cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
+        backtest.run(cfg, ds, preds=preds)
+    rj = cfg["data"]["db_path"].parent / "research.json"
+    if rj.exists():
+        j = json.loads(rj.read_text())
+        j["features"], j["specialists"] = fs, sp
+        rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
+    site.build(con, cfg)
+    if notify_on:
+        lines = [f"{'✅' if r['adopted'] else '・'} **{name}**（{r['trials']}通り／累計{r['cum_trials']}）: {r['reason']}"
+                 for name, r in (("AIの特徴量", fs), ("専門モデル", sp)) if r.get("trials")]
+        notify.send_text(cfg, "🔬 KabuScout 日曜の研究（AIの特徴量・専門モデル）", "\n".join(lines) or "判定する候補はありませんでした")
 
 
 def collect_extra(cfg: dict, uni: pd.DataFrame) -> None:

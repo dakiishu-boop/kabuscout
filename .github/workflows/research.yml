@@ -4,11 +4,12 @@ name: weekly-research
 
 on:
   schedule:
-    - cron: "0 0 * * 6"   # 毎週土曜 9:00 JST
+    - cron: "0 0 * * 6"   # 毎週土曜 9:00 JST（研究ループ一式）
+    - cron: "0 0 * * 0"   # 毎週日曜 9:00 JST（AIの特徴量・専門モデルの研究。6時間の上限に収めるため土曜と分けた）
   workflow_dispatch:
     inputs:
       command:
-        description: "research（研究ループ一式）/ backtest（過去ペーパートレードとWebページの更新だけ）/ edinet（財務データの取得だけ）/ jquants（J-Quants の決算サマリの取得だけ）/ evaluate-jquants（その効果の確認）/ survivorship（生存者バイアスの測定）/ tdnet（適時開示の取得だけ）/ evaluate-edinet（財務データの効果の確認）/ prices（株価・配当・分割の取得だけ）/ tdnet-xbrl（決算短信の数値の取得だけ）"
+        description: "research（研究ループ一式）/ backtest（過去ペーパートレードとWebページの更新だけ）/ edinet（財務データの取得だけ）/ jquants（J-Quants の決算サマリの取得だけ）/ evaluate-jquants（その効果の確認）/ survivorship（生存者バイアスの測定）/ tdnet（適時開示の取得だけ）/ evaluate-edinet（財務データの効果の確認）/ prices（株価・配当・分割の取得だけ）/ tdnet-xbrl（決算短信の数値の取得だけ）/ research-ai（AIの特徴量・専門モデルの研究だけ。毎週日曜）"
         required: false
         default: "research"
       args:
@@ -47,7 +48,7 @@ jobs:
           JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
           PYTHONWARNINGS: ignore
           ARGS: ${{ github.event.inputs.args }}
-          COMMAND: ${{ github.event.inputs.command || 'research' }}
+          COMMAND: ${{ github.event.inputs.command || (github.event.schedule == '0 0 * * 0' && 'research-ai') || 'research' }}
         run: python -m kabuscout "$COMMAND" $ARGS
       - uses: actions/cache/save@v4
         if: always()

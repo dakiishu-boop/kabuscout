@@ -28,7 +28,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "research-ai"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -57,10 +57,10 @@ def main(argv=None):
         sent = notify.send_text(cfg, "KabuScout テスト通知", "通知の設定は正常です ✅")
         print("送信:", sent or "なし（config.yaml / .env を確認）")
 
-    elif a.command in ("research", "backtest"):
+    elif a.command in ("research", "backtest", "research-ai"):  # research-ai = 日曜のAIの特徴量・専門モデルの研究
         from .pipeline import run_research
-        run_research(cfg, research=a.command == "research", trials=a.trials, budget_min=a.budget_min,
-                     notify_on=not a.no_notify, collect=not a.no_collect)
+        run_research(cfg, research=a.command != "backtest", trials=a.trials, budget_min=a.budget_min,
+                     notify_on=not a.no_notify, collect=not a.no_collect, part="ai" if a.command == "research-ai" else "main")
 
     elif a.command == "prices":  # 株価・配当・分割の取得だけ（分割の履歴を揃えるときなど、全期間の取り直しを毎日の実行とは別に済ませる）
         from .pipeline import store_of

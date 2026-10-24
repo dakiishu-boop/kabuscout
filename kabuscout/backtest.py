@@ -163,6 +163,8 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
     for i, d in enumerate(cal):
         # 1) 前日の注文を寄付で約定（寄付が想定より高く現金が足りなければ、買える単元まで減らす）
         for o in pending:
+            if o.get("nofill"):  # 研究用: 上限付きの指値が約定しなかった（寄付が上限より高かった）
+                continue
             px = o["entry"] * (1 + half_cost)
             n = min(o["shares"], int(cash / px // acc["lot_size"]) * acc["lot_size"])
             if n <= 0:
@@ -227,7 +229,8 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
             if cap_sec:
                 secs.append(r["sector"])
             pending.append(dict(code=r["code"], ci=cix[r["code"]], shares=n, entry=entry, stop=float(r["_stop"]), sector=r.get("sector"),
-                                exit_i=i + int(r["exit_days"]), exit_px=entry * (1 + float(r["ret"]))))
+                                exit_i=i + int(r["exit_days"]), exit_px=entry * (1 + float(r["ret"])),
+                                nofill=bool(r["_nofill"]) if "_nofill" in r else False))
             held.add(r["code"])
             avail -= n * float(r["close"]) * (1 + half_cost)
             n_new -= 1

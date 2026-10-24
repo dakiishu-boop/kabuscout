@@ -246,7 +246,7 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
             url=url or None, color=0x2CA02C if adopted else 0x808080, description="\n".join(lines)[:4000]))
     s = bt["stats"]
     M = (summary or {}).get("model")
-    if M:
+    if M and M.get("trials"):
         embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if M['adopted'] else '・'} **AIのモデル設定**（{M['trials']}通り／累計{M['cum_trials']}）: {M['reason']}")[:4000]
     F = (summary or {}).get("features")
     if F and F.get("trials"):

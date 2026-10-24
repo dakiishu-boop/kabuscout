@@ -228,16 +228,31 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
     if research:  # AIのモデル設定（正則化の強さ）の研究。勝った設定の過去ペーパートレードの予測をそのまま使う
         proxy = cfg["universe"]["market_proxy"]
         cal = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index
-        ms = rs.model_search(con, cfg, ds, cal)
-        if ms["adopted"]:
-            from .config import load_config
-            cfg = load_config()
-        fs = rs.feature_search(con, cfg, ds, cal, ms.pop("_row"))
-        if fs["adopted"]:
-            from .config import load_config
-            cfg = load_config()
-        sp = rs.specialist_search(con, cfg, ds, cal, fs.pop("_row"))
-        fs.pop("_preds")
+        # 実行時間（GitHub の上限6時間）に収めるため、重いAIの研究は3週に1回ずつ順番に行う（ジャーナル 52）。
+        # 2026-10-24 の週は、全部を行うと5時間23分かかり上限に迫った
+        turn = int(pd.Timestamp.today().isocalendar().week) % 3
+        skip = lambda row: dict(adopted=False, reason="今週は対象外（3週に1回）", trials=0, cum_trials=0, _row=row, _preds=row["preds"])
+        if turn == 0:
+            ms = rs.model_search(con, cfg, ds, cal)
+            if ms["adopted"]:
+                from .config import load_config
+                cfg = load_config()
+            row = ms.pop("_row")
+        else:
+            row = rs._wf_row(cfg, ds, cal)
+            ms = skip(row)
+            ms.pop("_row")
+        if turn == 1:
+            fs = rs.feature_search(con, cfg, ds, cal, row)
+            if fs["adopted"]:
+                from .config import load_config
+                cfg = load_config()
+            row = fs.pop("_row")
+            fs.pop("_preds")
+        else:
+            fs = {k: v for k, v in skip(row).items() if not k.startswith("_")}
+        sp = rs.specialist_search(con, cfg, ds, cal, row) if turn == 2 else skip(row)
+        sp.pop("_row", None)
         ms["_preds"] = sp.pop("_preds")
         if sp["adopted"]:
             from .config import load_config

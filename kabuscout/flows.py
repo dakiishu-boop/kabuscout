@@ -1,6 +1,6 @@
 """需給データ: JPX の銘柄別信用取引残高（日々・PDF）と空売り残高報告（日々・Excel）。
 
-JPX のサイトには直近数日〜2週間分しか置かれていないため、過去にさかのぼっての検証はできない。
+信用残は JPX のサイトに直近の数日分しか無い（2026-09-28 から全銘柄を毎営業日公表）。空売り残高報告は約1年分のバックナンバーがあるので、それも取り込む。
 毎日集めて手元に貯めていき、
 - 今すぐ: 候補銘柄の参考情報として表示（信用倍率・買残の上場比・大口の空売り残高）
 - 約1年分たまったら: 研究ループ・AIの特徴量として効果を検証
@@ -82,7 +82,13 @@ def collect_shorts(cfg: dict) -> int:
     old = pd.read_parquet(path) if path.exists() else pd.DataFrame()
     have = set(old["file"]) if len(old) else set()
     added = []
-    for href in _links(SHORT_PAGE, r"_Short_Positions\.xlsx?"):
+    # 今月のページに加えて、バックナンバー（約1年分の月別ページ）も見る。初回に過去1年分が揃い、以後は新しい日だけ取る
+    try:
+        months = sorted(set(re.findall(r'value="(/markets/public/short-selling/00-archives-\d+\.html)"', requests.get(SHORT_PAGE, timeout=30).text)))
+    except Exception:
+        months = []
+    hrefs = sorted({h for page in [SHORT_PAGE] + [BASE + m for m in months] for h in _links(page, r"_Short_Positions\.xlsx?")})
+    for href in hrefs:
         f = href.rsplit("/", 1)[-1]
         if f in have:
             continue

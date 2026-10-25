@@ -7,6 +7,7 @@ joblib==1.5.3
 pyyaml
 requests
 openpyxl
+xlrd>=2.0.1  # JPX の空売り残高報告は旧形式（.xls）
 jpholiday
 pyarrow==21.0.0
 pypdf

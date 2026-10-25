@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "research（研究ループ一式）/ backtest（過去ペーパートレードとWebページの更新だけ）/ edinet（財務データの取得だけ）/ jquants（J-Quants の決算サマリの取得だけ）/ evaluate-jquants（その効果の確認）/ survivorship（生存者バイアスの測定）/ tdnet（適時開示の取得だけ）/ evaluate-edinet（財務データの効果の確認）/ prices（株価・配当・分割の取得だけ）/ tdnet-xbrl（決算短信の数値の取得だけ）/ research-ai（AIの特徴量・専門モデルの研究だけ。毎週日曜）"
+        description: "research（研究ループ一式）/ backtest（過去ペーパートレードとWebページの更新だけ）/ edinet（財務データの取得だけ）/ jquants（J-Quants の決算サマリの取得だけ）/ evaluate-jquants（その効果の確認）/ survivorship（生存者バイアスの測定）/ tdnet（適時開示の取得だけ）/ evaluate-edinet（財務データの効果の確認）/ prices（株価・配当・分割の取得だけ）/ tdnet-xbrl（決算短信の数値の取得だけ）/ research-ai（AIの特徴量・専門モデルの研究だけ。毎週日曜）/ flows（信用残・空売り残高・品貸料の取得だけ）"
         required: false
         default: "research"
       args:

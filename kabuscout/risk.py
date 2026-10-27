@@ -23,10 +23,15 @@ def order_shares(acc: dict, equity: float, cash: float, price: float, stop_dist:
     return int(n // lot) * lot
 
 
+TICK = "tse"  # 呼値の表。米国株の研究（kabuscout/us.py）では "us"（1セント）
+
+
 def tick_size(price):
     """東証の呼値の単位（標準の表。TOPIX100 の銘柄はもっと細かいが、ここでは保守的に標準の表を使う）。配列でも可。"""
     import numpy as np
     p = np.asarray(price, dtype="float64")
+    if TICK == "us":
+        return np.full_like(p, 0.01)
     return np.select([p <= 3000, p <= 5000, p <= 30000, p <= 50000, p <= 300000],
                      [1.0, 5.0, 10.0, 50.0, 100.0], default=500.0)
 

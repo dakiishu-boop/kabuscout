@@ -198,9 +198,12 @@ class PriceStore:
         return c.apply(lambda s: s.first_valid_index()).dropna().map(lambda d: d.strftime("%Y-%m-%d"))
 
 
+SUFFIX = ".T"  # Yahoo のティッカーの末尾（東証）。米国株の研究（kabuscout/us.py）では "" にする
+
+
 def ticker(code: str) -> str:
     """Yahoo のティッカー。指数（^N225 など）はそのまま、個別株は「コード.T」。"""
-    return code if code.startswith("^") else f"{code}.T"
+    return code if code.startswith("^") else f"{code}{SUFFIX}"
 
 
 def _wide(raw: pd.DataFrame, codes: list[str]) -> dict:
@@ -215,7 +218,7 @@ def _wide(raw: pd.DataFrame, codes: list[str]) -> dict:
             w = raw.xs(_YF_NAME[f], axis=1, level=1)
         except KeyError:
             continue
-        w.columns = [str(c).replace(".T", "") for c in w.columns]
+        w.columns = [str(c)[: -len(SUFFIX)] if SUFFIX and str(c).endswith(SUFFIX) else str(c) for c in w.columns]
         out[f].append(w.astype("float32"))
     return out
 
@@ -267,7 +270,8 @@ def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
     # データが1本も無い銘柄（新規上場直後など）は週1回だけ取り直す
     fresh = [c for c in codes if (c not in last and not recently_tried(c))
              or (c in last and (last[c] < cutoff or meta.get(c, "9999") > hstart))]
-    if last and (not store.load_dividends(codes=["7203"]).shape[1] or not store.has_splits()):
+    probe = ["7203"] if "7203" in codes else codes[:50]  # 配当のある銘柄で確かめる（米国株の研究では先頭の50銘柄）
+    if last and (not store.load_dividends(codes=probe).shape[1] or not store.has_splits()):
         # 配当・分割のデータを持っていない旧形式の保存データ → 一度だけ全期間を取り直して揃える
         log.info("配当・分割のデータを揃えるため、全銘柄の全期間を取り直します（初回のみ）")
         fresh = [c for c in codes if c in last or not recently_tried(c)]

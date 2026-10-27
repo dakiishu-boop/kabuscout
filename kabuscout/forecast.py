@@ -89,7 +89,7 @@ def walk_forward(f: pd.DataFrame, start_year: int = 2016, params: dict | None = 
         m = HistGradientBoostingRegressor(**p).fit(tr[FEATS], tr["y"])
         out.append(te.assign(pred=m.predict(te[FEATS])))
         log.info("  %d年: %d社・期で学習 → %d件を予想", y, len(tr), len(te))
-    return pd.concat(out, ignore_index=True)
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
 def score(pr: pd.DataFrame) -> pd.DataFrame:
@@ -167,6 +167,8 @@ def predictions(cfg: dict, store=None, uni: pd.DataFrame | None = None) -> pd.Da
     close = p["close"].astype("float64")
     log.info("企業の利益の予想を作り直しています")
     pr = walk_forward(add_market(cfg, panel(cfg), close, uni))
+    if pr.empty:  # 財務データの会社が株価データに無い（米国株の研究など）
+        return None
     f = edinet.load(cfg)
     f = f[f["eps"].notna() & (f["eps"].abs() > 0)].assign(shares=lambda x: x["profit"] / x["eps"])
     pr = pr.merge(f.loc[f["shares"] > 0, ["code", "period_end", "shares"]], on=["code", "period_end"], how="left")

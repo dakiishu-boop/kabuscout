@@ -22,7 +22,8 @@ EARN_FEATURES = ["earn_age", "earn_react", "earn_surprise", "earn_vol", "earn_to
 
 
 def _fetch_one(code: str) -> pd.DataFrame:
-    x = yf.Ticker(f"{code}.T").get_earnings_dates(limit=100)
+    from .data import ticker
+    x = yf.Ticker(ticker(code)).get_earnings_dates(limit=100)
     if x is None or x.empty:
         return pd.DataFrame()
     x = x.dropna(how="all", subset=["EPS Estimate", "Reported EPS"]).reset_index()

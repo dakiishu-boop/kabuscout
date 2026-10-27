@@ -21,6 +21,7 @@ from . import data, earnings, risk
 
 log = logging.getLogger(__name__)
 LISTS = ["https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"]
+SCREENER = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000&download=true"
 EXCLUDE = re.compile(r"Warrant|Right|Unit|Preferred|Depositary|Notes|Debenture|Trust Preferred|Acquisition Corp|%", re.I)
 
 
@@ -59,13 +60,33 @@ def universe() -> pd.DataFrame:
         t = t[t["code"].str.fullmatch(r"[A-Z]{1,5}")]  # 別クラス株（BRK.B など）は除く
         rows.append(t[["code", "name"]])
     u = pd.concat(rows).drop_duplicates("code")
-    return u.assign(market="US", sector33="?", sector17="?", scale="-").reset_index(drop=True)
+    try:  # 業種: NASDAQ のスクリーナーの industry（約140）を東証33業種、sector（約12）を17業種の代わりに使う
+        r = requests.get(SCREENER, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}, timeout=60)
+        s = pd.DataFrame(r.json()["data"]["rows"]).set_index("symbol")
+    except Exception as e:
+        log.warning("米国株の業種を取得できませんでした: %s", e)
+        s = pd.DataFrame(columns=["industry", "sector"])
+    ind, sec = (u["code"].map(s[k].replace("", None)) for k in ("industry", "sector"))
+    # 業種が分からない銘柄は銘柄ごとに別の業種として扱う（同じ業種の保有数の制限を誤ってかけない）
+    return u.assign(market="US", sector33=ind.fillna("?" + u["code"]), sector17=sec.fillna("?" + u["code"]),
+                    scale="-").reset_index(drop=True)
+
+
+def save_universe(cfg_us: dict, uni: pd.DataFrame) -> None:
+    """過去ペーパートレードが業種を読む銘柄一覧の表を、米国株用のデータベースに書く。"""
+    from .db import connect
+    con = connect(cfg_us["data"]["db_path"])
+    con.execute("DELETE FROM universe")
+    con.executemany("INSERT INTO universe(code, name, market, sector33, sector17, scale, updated) VALUES (?,?,?,?,?,?,date('now'))",
+                    uni[["code", "name", "market", "sector33", "sector17", "scale"]].itertuples(index=False))
+    con.commit()
 
 
 def prepare(cfg_us: dict, earnings_minutes: float | None = None) -> pd.DataFrame:
     """銘柄一覧・株価・決算日を揃える（初回は株価に約1時間、決算日に数時間）。"""
     use_us()
     uni = universe()
+    save_universe(cfg_us, uni)
     store = data.PriceStore(cfg_us["data"]["price_dir"])
     log.info("米国株: %d銘柄", len(uni))
     data.update_prices(store, uni["code"].tolist() + [cfg_us["universe"]["market_proxy"]], cfg_us)

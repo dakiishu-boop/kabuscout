@@ -80,6 +80,8 @@ def walk_forward(f: pd.DataFrame, start_year: int = 2016, params: dict | None = 
     p = {**dict(max_iter=400, learning_rate=0.03, max_leaf_nodes=15, min_samples_leaf=100, l2_regularization=1.0,
                 categorical_features="from_dtype", random_state=42), **(params or {})}
     out = []
+    if f.empty:  # 財務データの会社が株価データに無い（米国株の研究など）
+        return pd.DataFrame()
     for y in range(start_year, int(f["known"].dt.year.max()) + 1):
         cut = pd.Timestamp(f"{y}-01-01")
         tr = f[(f["y_known"] < cut) & f["y"].notna()]

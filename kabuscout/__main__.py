@@ -14,6 +14,8 @@
   restore --from DIR      バックアップ（checkout 済み）を確かめてから data/ に戻す（--force で上書き）
   backup-drill --from DIR 試し戻し（一時フォルダに戻して確かめる。結果を Discord に送る）
   remind-push  最後の push から45日を過ぎていたら Discord で知らせる（60日で定時実行が止まるため）
+  shadow-due   影のモデルの学習し直しが要るか（GitHub Actions の出力 due=true/false に書く）
+  shadow-train 影のモデルを学習し直す（要るものだけ。毎日の実行とは別の仕事で動かす）
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push", "shadow-due", "shadow-train"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -126,6 +128,24 @@ def main(argv=None):
             notify.send_text(cfg, "🧯 KabuScout バックアップの試し戻し", body)
         if not v["ok"]:
             sys.exit(1)
+    elif a.command in ("shadow-due", "shadow-train"):
+        import os
+        from . import pool, shadow
+        from .pipeline import dataset
+        if a.command == "shadow-due":
+            proxy = cfg["universe"]["market_proxy"]
+            dates = data.PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index.to_series()
+            keys = shadow.due(cfg, dates)
+        else:
+            pl = pool.load(cfg)
+            ds = dataset(cfg, pl)
+            before = shadow.due(cfg, ds["date"].drop_duplicates())
+            shadow.ensure(cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
+            keys = [k for k in before if k not in shadow.due(cfg, ds["date"].drop_duplicates())]  # 学習できたもの
+        print(f"{a.command}: {keys}")
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                f.write(f"{'due' if a.command == 'shadow-due' else 'trained'}={'true' if keys else 'false'}\n")
     elif a.command == "remind-push":
         from . import backup
         print(f"最後の push から {backup.remind_push(cfg)} 日")

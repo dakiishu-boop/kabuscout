@@ -66,10 +66,29 @@ def _path(cfg: dict, key: str):
     return cfg["data"]["model_dir"] / f"shadow_{key}.joblib"
 
 
+def _load(cfg: dict, key: str) -> dict | None:
+    try:
+        return joblib.load(_path(cfg, key)) if _path(cfg, key).exists() else None
+    except Exception as e:
+        log.warning("影のモデル %s の読み込みに失敗: %s", key, e)
+        return None
+
+
+def _stale(cfg: dict, v: dict, b: dict | None, dates: pd.Series) -> bool:
+    """学習し直しが要るか: 無い・定義が変わった・本番と同じ間隔（retrain_every_days）を過ぎた。"""
+    spec = json.dumps(v["changes"], sort_keys=True)
+    return b is None or b.get("spec") != spec or int((dates > pd.Timestamp(b["data_end"])).sum()) >= cfg["learning"]["retrain_every_days"]
+
+
+def due(cfg: dict, dates: pd.Series) -> list[str]:
+    """学習し直しが要る影の候補（毎日の実行の最後に確かめ、要るときだけ別の仕事で学習する。Webの公開を遅らせないため）。"""
+    return [v["key"] for v in variants(cfg) if _stale(cfg, v, _load(cfg, v["key"]), dates)]
+
+
 def ensure(cfg: dict, ds: pd.DataFrame, data_end: str, train: bool = True) -> dict:
     """影のモデルを読み込み、無い・定義が変わった・本番と同じ間隔（retrain_every_days）を過ぎたら学習し直す。
     学習は本番の最終モデルと同じ作り方（全期間・同じ種の数・新しいデータほど重く）。失敗しても本番は止めない。
-    train=False: 読み込むだけ（通知の前の採点用。学習は通知の後に回して、通知を遅らせない）。"""
+    train=False: 読み込むだけ（毎日の採点用。学習は shadow-train の別の仕事で行い、通知と Web の公開を遅らせない）。"""
     from . import learner
     vs = variants(cfg)
     if not vs:
@@ -78,12 +97,8 @@ def ensure(cfg: dict, ds: pd.DataFrame, data_end: str, train: bool = True) -> di
     dates = ds["date"].drop_duplicates()
     for v in vs:
         spec = json.dumps(v["changes"], sort_keys=True)
-        b = None
-        try:
-            b = joblib.load(_path(cfg, v["key"])) if _path(cfg, v["key"]).exists() else None
-        except Exception as e:
-            log.warning("影のモデル %s の読み込みに失敗: %s", v["key"], e)
-        if b is not None and b.get("spec") == spec and (not train or int((dates > pd.Timestamp(b["data_end"])).sum()) < cfg["learning"]["retrain_every_days"]):
+        b = _load(cfg, v["key"])
+        if b is not None and b.get("spec") == spec and (not train or not _stale(cfg, v, b, dates)):
             out[v["key"]] = b
         elif train:
             todo.append((v, spec))

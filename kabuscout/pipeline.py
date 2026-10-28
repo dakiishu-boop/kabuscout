@@ -200,11 +200,6 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     con.commit()
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
     print("\n" + md)
-    try:  # 影のモデルの学習は通知の後（数分かかるので通知を遅らせない。翌日の採点から使う）
-        from . import shadow
-        shadow.ensure(cfg, ds, data_date)
-    except Exception as e:
-        log.warning("影のモデルの学習に失敗（本番は続行）: %s", e)
     if collect:
         collect_extra(cfg, uni)
     return dict(date=data_date, top=top, n_signals=len(today))

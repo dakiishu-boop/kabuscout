@@ -35,6 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_BACKUP_KEY: ${{ secrets.BACKUP_DEPLOY_KEY != '' }}   # バックアップ用の鍵が登録されているか（docs/RESTORE.md）
+    outputs:
+      shadow_due: ${{ steps.shadow_due.outputs.due }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +83,12 @@ jobs:
           python -m kabuscout daily $ARGS
           python -m kabuscout site   # 休場日などでスキップした日もページは最新化
 
+      # 影のモデル（shadow.yaml）の学習し直しが要るか。要る日だけ、下の shadow ジョブで学習する（Webの公開を遅らせないため）
+      - name: Check if shadow models need retraining
+        id: shadow_due
+        continue-on-error: true
+        run: python -m kabuscout shadow-due
+
       # 成功したときだけ保存する（失敗した実行の書きかけのファイルを翌日に引き継がない）
       - uses: actions/cache/save@v4
         with:
@@ -113,6 +121,37 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
+
+  # 影のモデルの学習（5営業日に1回ほど・数十分）。Webの公開（deploy）とは並んで動き、終わったらモデル入りの data をキャッシュに保存する
+  # （翌日の実行は一番新しいキャッシュ＝これを読む）。失敗しても本番には影響しない（影の点が付かない日ができるだけ）
+  shadow:
+    needs: screen
+    if: needs.screen.outputs.shadow_due == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: kabuscout-data-${{ github.run_id }}-shadow
+          restore-keys: kabuscout-data-
+          fail-on-cache-miss: true
+      - name: Train shadow models
+        id: train
+        env:
+          PYTHONWARNINGS: ignore
+        run: python -m kabuscout shadow-train
+      - uses: actions/cache/save@v4
+        if: steps.train.outputs.trained == 'true'
+        with:
+          path: data
+          key: kabuscout-data-${{ github.run_id }}-shadow
 
   deploy:
     needs: screen

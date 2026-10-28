@@ -22,6 +22,10 @@ on:
         description: "戻すバックアップ（latest / daily-mon〜fri / weekly-0〜3 / monthly-01〜12）"
         required: false
         default: "latest"
+      simulate_backup_failure:
+        description: "試験用: バックアップをわざと失敗させる（失敗してもWebの公開とリマインダーが動くかの確認）"
+        type: boolean
+        default: false
 
 concurrency: kabuscout-data
 
@@ -118,8 +122,13 @@ jobs:
           fetch-depth: 1
       - name: Back up irreplaceable data
         if: env.HAS_BACKUP_KEY == 'true'
-        run: python -m kabuscout backup --repo-dir _backup && rm -rf _backup
+        run: |
+          if [ "${{ github.event.inputs.simulate_backup_failure }}" = "true" ]; then
+            echo "::error::試験のためにバックアップをわざと失敗させます"; exit 1
+          fi
+          python -m kabuscout backup --repo-dir _backup && rm -rf _backup
       - name: Remind to push (scheduled runs stop after 60 days without a push)
+        if: always()   # バックアップが失敗した日も知らせる
         continue-on-error: true
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

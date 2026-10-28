@@ -1,7 +1,7 @@
 """影の候補: 本番の判断には使わず、本番と同じ日の全候補に点を付けて記録するだけのAI（前向きの比較）。
 
 過去のデータでは決着しなかった候補（方向は良いが t<2.5）を、結果が出る前に shadow.yaml に登録する（git の記録が事前登録の証拠）。
-同じ日の同じ候補で本番と比べるので、相場の運の差は打ち消し合う。判定は forward.evaluate（順位相関の差）。
+同じ日の同じ候補で本番と比べるので、相場の運の差は打ち消し合う。判定は forward.evaluate（上位10%の上乗せの差）。
 - 事前登録した候補（source=registered）: 判定日に shadow.yaml の基準で合否を出すだけ。本番への昇格は人が決める
 - 研究ループが採用したAIの変更（source=research）: いきなり本番に入れず、ここで一定期間走らせ、
   判定日に「本番よりはっきり悪くない」なら本番に昇格する（基準は shadow.yaml の research_rule）
@@ -126,9 +126,9 @@ def verdict(v: dict, r: dict) -> str:
     rule = v["rule"]
     if (r.get("weeks") or 0) < int(rule.get("min_weeks", 8)):
         return "判定日を過ぎたが結果の出た週が足りない"
-    t = r.get("ic_t")
+    t = r.get("uplift_t")  # 上位10%の上乗せの差（影 − 本番）の t
     if v["source"] == "registered":
-        ok = t is not None and t >= float(rule.get("t_min", 2.0)) and (r.get("uplift_diff") or 0) >= 0
+        ok = t is not None and t >= float(rule.get("t_min", 2.0))
         return "合格（本番への昇格は人が判断）" if ok else "不合格"
     return "昇格" if t is None or t > float(rule.get("t_floor", -1.0)) else "見送り（本番よりはっきり悪い）"
 

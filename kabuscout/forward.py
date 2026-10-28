@@ -187,7 +187,7 @@ def evaluate(cfg: dict, ds: pd.DataFrame) -> dict:
         out.update(status="caution", text="順位の質がやや低い（過去の下位10%）")
     else:
         out.update(status="ok", text="順位の質は想定どおりの範囲")
-    # 影の候補: 同じ日の候補での順位相関・上乗せの差（影 − 本番）
+    # 影の候補: 同じ日の候補での上位10%の上乗せの差（判定に使う。売買に使うのは順位の上の方なので）と順位相関の差（参考）
     out["shadows"] = []
     for v in shadow.variants(cfg):
         col = f"score_{v['key']}"
@@ -198,7 +198,7 @@ def evaluate(cfg: dict, ds: pd.DataFrame) -> dict:
                 a, b = daily_metrics(sub, "ai_score"), daily_metrics(sub, col)
                 d = weekly((b - a).dropna())
                 r.update(weeks=int(len(d)), ic_diff=float(d["ic"].mean()) if len(d) else None, ic_t=nw_t(d["ic"].to_numpy()),
-                         uplift_diff=float(d["uplift"].mean()) if len(d) else None)
+                         uplift_diff=float(d["uplift"].mean()) if len(d) else None, uplift_t=nw_t(d["uplift"].to_numpy()))
         r["verdict"] = shadow.verdict(v, r)
         out["shadows"].append(r)
     try:
@@ -225,5 +225,5 @@ def text(fw: dict | None) -> str:
         s += f"／上位10%の上乗せ {up.get('mean', float('nan')):+.2%}）"
     sh = [x for x in fw.get("shadows") or [] if x.get("weeks")]
     if sh:
-        s += "\n影の候補: " + " ／ ".join(f"{x['label']} 順位相関の差 {x['ic_diff']:+.3f}（{x['weeks']}週・判定 {x['judge']}）" for x in sh)
+        s += "\n影の候補: " + " ／ ".join(f"{x['label']} 上位10%の上乗せの差 {x['uplift_diff']:+.2%}（t={x['uplift_t'] if x['uplift_t'] is not None else float('nan'):.1f}・{x['weeks']}週・判定 {x['judge']}・{x['verdict']}）" for x in sh)
     return s

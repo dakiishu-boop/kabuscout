@@ -37,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_BACKUP_KEY: ${{ secrets.BACKUP_DEPLOY_KEY != '' }}   # バックアップ用の鍵が登録されているか（docs/RESTORE.md）
+    outputs:
+      pages: ${{ steps.pages.outputs.ready }}
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +86,13 @@ jobs:
           path: data
           key: kabuscout-data-${{ github.run_id }}
 
+      # Webページの公開用ファイルは、バックアップより前に上げる（バックアップが失敗しても公開は止めない。失敗は赤く残る）
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: pages
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
       # 取り直せないデータ（DB・需給・決算短信の数値・J-Quants・全候補の記録）を private のリポジトリに控える（kabuscout/backup.py）
       - name: Backup key missing
         if: env.HAS_BACKUP_KEY != 'true'
@@ -100,12 +109,10 @@ jobs:
       - name: Back up irreplaceable data
         if: env.HAS_BACKUP_KEY == 'true'
         run: python -m kabuscout backup --repo-dir _backup && rm -rf _backup
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
 
   deploy:
     needs: research
+    if: ${{ !cancelled() && needs.research.outputs.pages == 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

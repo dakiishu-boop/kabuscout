@@ -37,6 +37,7 @@ jobs:
       HAS_BACKUP_KEY: ${{ secrets.BACKUP_DEPLOY_KEY != '' }}   # バックアップ用の鍵が登録されているか（docs/RESTORE.md）
     outputs:
       shadow_due: ${{ steps.shadow_due.outputs.due }}
+      pages: ${{ steps.pages.outputs.ready }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -95,6 +96,13 @@ jobs:
           path: data
           key: kabuscout-data-${{ github.run_id }}
 
+      # Webページの公開用ファイルは、バックアップより前に上げる（バックアップが失敗しても公開は止めない。失敗は赤く残る）
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: pages
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
       # 取り直せないデータ（DB・需給・決算短信の数値・J-Quants・全候補の記録）を private のリポジトリに控える（kabuscout/backup.py）
       - name: Backup key missing
         if: env.HAS_BACKUP_KEY != 'true'
@@ -118,15 +126,12 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python -m kabuscout remind-push
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
 
   # 影のモデルの学習（5営業日に1回ほど・数十分）。Webの公開（deploy）とは並んで動き、終わったらモデル入りの data をキャッシュに保存する
   # （翌日の実行は一番新しいキャッシュ＝これを読む）。失敗しても本番には影響しない（影の点が付かない日ができるだけ）
   shadow:
     needs: screen
-    if: needs.screen.outputs.shadow_due == 'true'
+    if: ${{ !cancelled() && needs.screen.outputs.shadow_due == 'true' }}   # バックアップが失敗しても動く（キャッシュはその前に保存済み）
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -155,6 +160,7 @@ jobs:
 
   deploy:
     needs: screen
+    if: ${{ !cancelled() && needs.screen.outputs.pages == 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

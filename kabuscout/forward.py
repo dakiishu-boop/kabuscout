@@ -3,9 +3,11 @@
 ペーパートレードは1日2件ほどで、乱数の種だけでも年±8ポイント動く（ジャーナル 24）ので、損益だけでは
 「AIが効いているか」の判定に何年もかかる（1取引の損益の標準偏差 約7% → t=2 まで約3年）。
 そこで、毎日の全候補（100〜200件）について、AIの点と、その後の実際の売買ルールでの結果を比べる:
-- 順位相関（主な指標）: その日の候補の中で、AIの順位と結果の順位がどれだけ揃っていたか（スピアマン）
-  過去の検証（2016〜2026年）では週平均 0.16・プラスの週 90%で、約4週で「0より上」と言える（ジャーナル 63）
-- 上位10%の上乗せ（参考）: AIの上位10%の平均 − その日の全候補の平均（ジャーナル 19 の前向き版）。ばらつきが大きく判定に約2年
+- 早期警報（主な指標）: 共通の短期ルール（10営業日）での結果との順位相関（スピアマン）。全候補が10営業日で決着するので早く判定できる。
+  過去の検証（2016〜2026年）では週平均 0.16・プラスの週 88%で、結果の出揃った週が約5週あれば「0より上」と言える（ジャーナル 63）。
+  比較する過去の分布も同じラベルで作る（backtest.json の forward_ref.common）
+- 実際の売買ルール（最長60営業日）での順位相関・上位10%の上乗せは参考と影の比較に使う（全候補が出揃うまで約3ヶ月）
+- 集計するのは、その日の全候補の結果が出揃った日だけ（matured）。決着したものから集めると最近の日は早く決着した取引（多くは損切）に偏る
 
 注意: 同じ日の候補は一緒に動き、保有期間も重なるので件数ほど独立ではない。週ごとの平均にしてから比べ、
 t 値は週どうしの相関を考えて計算する（Newey-West、4週）。
@@ -70,26 +72,37 @@ def load(cfg: dict, first_only: bool = True) -> pd.DataFrame | None:
 
 
 def with_outcomes(cfg: dict, logged: pd.DataFrame, ds: pd.DataFrame) -> pd.DataFrame:
-    """結果が確定した候補に、実際に使う売買ルール（戦略ごと）での結果 ret を付ける（過去の検証の ret と同じ定義）。"""
+    """記録した候補に結果を付ける（決着していないものは NaN）。
+    - ret_common: 共通の短期ルール（labeling.horizon_days、10営業日）での結果。全候補が10営業日で決着するので早期警報に使う
+    - ret: 実際に使う売買ルール（戦略ごと、最長 plan_horizon 営業日）での結果。過去の検証の ret と同じ定義"""
     from . import learner
     cols = ["date", "code", "strategies", "atr", "ret", "label", "exit_days", "complete"]
-    d = ds.loc[ds["complete"], cols].merge(logged[["date", "code"]].drop_duplicates(), on=["date", "code"])
+    d = ds[cols].merge(logged[["date", "code"]].drop_duplicates(), on=["date", "code"])
     if d.empty:
-        return logged.iloc[:0].assign(ret=pd.Series(dtype=float))
-    d = learner.with_plan_outcomes(d, cfg)
-    d = d[d["complete_plan"]][["date", "code", "ret_plan"]].rename(columns={"ret_plan": "ret"})
-    return logged.drop(columns=[c for c in ("ret",) if c in logged]).merge(d, on=["date", "code"])
+        return logged.iloc[:0].assign(ret=pd.Series(dtype=float), ret_common=pd.Series(dtype=float))
+    p = learner.with_plan_outcomes(d, cfg)
+    d = d.assign(ret_common=d["ret"].where(d["complete"]), ret=p["ret_plan"].where(p["complete_plan"]))[["date", "code", "ret_common", "ret"]]
+    return logged.drop(columns=[c for c in ("ret", "ret_common") if c in logged]).merge(d, on=["date", "code"])
 
 
-def daily_metrics(df: pd.DataFrame, col: str) -> pd.DataFrame:
+def matured(df: pd.DataFrame, ds: pd.DataFrame, h: int) -> pd.DataFrame:
+    """その日の全候補の結果が出揃った日だけ（最長 h 営業日の保有が終わった日）。
+    決着した候補から集めると、最近の日は早く決着した取引（多くは損切）ばかりになり、過去の検証（全候補の結果が出揃ったもの）と条件が揃わない。"""
+    dates = np.sort(ds["date"].unique())
+    if len(dates) <= h:
+        return df.iloc[:0]
+    return df[df["date"] <= dates[-h - 1]]
+
+
+def daily_metrics(df: pd.DataFrame, col: str, ret: str = "ret") -> pd.DataFrame:
     """日ごとの順位相関と上位10%の上乗せ（候補が20件未満の日は除く）。"""
     rows = []
     for d, g in df.groupby("date"):
-        g = g[[col, "ret"]].dropna()
+        g = g[[col, ret]].dropna()
         if len(g) < 20:
             continue
         r = g[col].rank(pct=True)
-        rows.append((d, float(g[col].rank().corr(g["ret"].rank())), float(g.loc[r > TOP_Q, "ret"].mean() - g["ret"].mean())))
+        rows.append((d, float(g[col].rank().corr(g[ret].rank())), float(g.loc[r > TOP_Q, ret].mean() - g[ret].mean())))
     return pd.DataFrame(rows, columns=["date", "ic", "uplift"]).set_index("date")
 
 
@@ -111,11 +124,18 @@ def nw_t(x) -> float | None:
     return float(x.mean() / np.sqrt(v / n)) if v > 0 else None
 
 
-def reference(preds: pd.DataFrame) -> dict:
-    """過去の検証（ウォークフォワード）の週ごとの順位相関・上乗せ。backtest.json に保存して、前向きの結果と比べる。"""
-    m = weekly(daily_metrics(preds[preds["complete"]].assign(score=preds["prob"]), "score"))
-    return dict(weeks=[str(p) for p in m.index], ic=[round(float(v), 4) for v in m["ic"]],
-                uplift=[round(float(v), 5) for v in m["uplift"]])
+def reference(preds: pd.DataFrame, ds: pd.DataFrame | None = None) -> dict:
+    """過去の検証（ウォークフォワード）の週ごとの順位相関・上乗せ。backtest.json に保存して、前向きの結果と比べる。
+    plan: 実際の売買ルールでの結果（preds の ret）／common: 共通の短期ルール（10営業日）での結果（ds の ret。早期警報と同じラベル）"""
+    fmt = lambda m: dict(weeks=[str(p) for p in m.index], ic=[round(float(v), 4) for v in m["ic"]],
+                         uplift=[round(float(v), 5) for v in m["uplift"]])
+    pr = preds[preds["complete"]].assign(score=preds["prob"])
+    out = dict(plan=fmt(weekly(daily_metrics(pr, "score"))))
+    if ds is not None:
+        c = pr[["date", "code", "score"]].merge(ds.loc[ds["complete"], ["date", "code", "ret"]].rename(columns={"ret": "ret_common"}),
+                                                on=["date", "code"])
+        out["common"] = fmt(weekly(daily_metrics(c, "score", "ret_common")))
+    return out
 
 
 def _rolling_means(x: np.ndarray, k: int) -> np.ndarray:
@@ -169,16 +189,27 @@ def evaluate(cfg: dict, ds: pd.DataFrame) -> dict:
         return dict(status="waiting", text="全候補の記録がまだありません", weeks=0)
     res = with_outcomes(cfg, logged, ds)
     p = cfg["data"]["db_path"].parent / "backtest.json"
-    ref = json.loads(p.read_text()).get("forward_ref") if p.exists() else None
-    out = dict(logged_days=int(logged["date"].nunique()), matured_days=int(res["date"].nunique()) if len(res) else 0)
-    if len(res) and "ai_score" in res:
-        w = weekly(daily_metrics(res, "ai_score"))
-        out["ai"] = dict(ic=_vs_reference(w["ic"], (ref or {}).get("ic")), uplift=_vs_reference(w["uplift"], (ref or {}).get("uplift")),
-                         series=[[str(k), round(float(a), 4), round(float(b), 5)] for k, a, b in w[["ic", "uplift"]].itertuples()])
+    ref = (json.loads(p.read_text()).get("forward_ref") if p.exists() else None) or {}
+    hc, hp = int(cfg["labeling"]["horizon_days"]), learner.plan_horizon(cfg)
+    rc = matured(res, ds, hc).dropna(subset=["ret_common"])  # 早期警報: 共通ルール（全候補が hc 営業日で決着）
+    rp = matured(res, ds, hp).dropna(subset=["ret"])         # 実際の売買ルール（最長 hp 営業日）: 参考と影の比較
+    out = dict(logged_days=int(logged["date"].nunique()), horizon_common=hc, horizon_plan=hp,
+               matured_days=int(rc["date"].nunique()), matured_days_plan=int(rp["date"].nunique()))
+    if "ai_score" in res:
+        out["ai"] = {}
+        if len(rc):
+            w = weekly(daily_metrics(rc, "ai_score", "ret_common"))
+            c = ref.get("common") or {}
+            out["ai"].update(ic=_vs_reference(w["ic"], c.get("ic")), uplift=_vs_reference(w["uplift"], c.get("uplift")),
+                             series=[[str(k), round(float(a), 4), round(float(b), 5)] for k, a, b in w[["ic", "uplift"]].itertuples()])
+        if len(rp):
+            w = weekly(daily_metrics(rp, "ai_score"))
+            pl = ref.get("plan") or {}
+            out["ai"].update(plan_ic=_vs_reference(w["ic"], pl.get("ic")), plan_uplift=_vs_reference(w["uplift"], pl.get("uplift")))
     ic = (out.get("ai") or {}).get("ic") or {}
     n = ic.get("weeks", 0)
     if n < MIN_WEEKS:
-        out.update(status="waiting", text=f"判定には結果の出た週が{MIN_WEEKS}週以上必要（現在{n}週、記録{out['logged_days']}日）")
+        out.update(status="waiting", text=f"判定には全候補の結果（{hc}営業日ルール）が出揃った週が{MIN_WEEKS}週以上必要（現在{n}週、記録{out['logged_days']}日）")
     elif "percentile" not in ic:
         out.update(status="unknown", text="過去の検証の比較用の値がまだありません（土曜の研究ループで作られます）")
     elif ic["percentile"] < 0.025:
@@ -192,8 +223,8 @@ def evaluate(cfg: dict, ds: pd.DataFrame) -> dict:
     for v in shadow.variants(cfg):
         col = f"score_{v['key']}"
         r = dict(key=v["key"], label=v["label"], source=v["source"], start=v["start"], judge=v["judge"], rule=v["rule"])
-        if len(res) and col in res:
-            sub = res[res[col].notna()]
+        if len(rp) and col in rp:
+            sub = rp[rp[col].notna()]
             if len(sub):
                 a, b = daily_metrics(sub, "ai_score"), daily_metrics(sub, col)
                 d = weekly((b - a).dropna())
@@ -218,7 +249,7 @@ def text(fw: dict | None) -> str:
     s = f"{icon} {fw['text']}"
     ic = (fw.get("ai") or {}).get("ic") or {}
     if ic.get("weeks", 0) >= MIN_WEEKS:
-        s += f"（直近{ic['weeks']}週の順位相関 {ic['mean']:.3f}"
+        s += f"（直近{ic['weeks']}週の順位相関〔{fw.get('horizon_common', 10)}営業日ルール〕 {ic['mean']:.3f}"
         if "percentile" in ic:
             s += f"：過去の同じ週数の中で上位{max(1 - ic['percentile'], 0.01):.0%}・ふつうは {ic['typical']:.3f}"
         up = (fw.get("ai") or {}).get("uplift") or {}

@@ -16,6 +16,14 @@ on:
         description: "追加オプション（例: --trials 400 --budget-min 120）"
         required: false
         default: ""
+      restore_from_backup:
+        description: "キャッシュが消えたときだけ: バックアップ（private リポジトリ）から取り直せないデータを戻して実行（docs/RESTORE.md。command は prices）"
+        type: boolean
+        default: false
+      backup_branch:
+        description: "戻すバックアップ（latest / daily-mon〜fri / weekly-0〜3 / monthly-01〜12）"
+        required: false
+        default: "latest"
 
 concurrency: kabuscout-data
 
@@ -27,6 +35,8 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
+    env:
+      HAS_BACKUP_KEY: ${{ secrets.BACKUP_DEPLOY_KEY != '' }}   # バックアップ用の鍵が登録されているか（docs/RESTORE.md）
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +46,28 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - uses: actions/cache/restore@v4
+        id: cache
         with:
           path: data
           key: kabuscout-data-${{ github.run_id }}
           restore-keys: kabuscout-data-
+          # キャッシュが無い日は空から作り直さずに失敗させる（取り直せないデータを空で上書きしないため）。
+          # 本当に消えたときは restore_from_backup で実行して、バックアップから戻す（docs/RESTORE.md。キャッシュがある日は戻さない）
+          fail-on-cache-miss: ${{ github.event.inputs.restore_from_backup != 'true' }}
+
+      - name: Check out backup (restore only)
+        if: github.event.inputs.restore_from_backup == 'true' && steps.cache.outputs.cache-matched-key == ''
+        uses: actions/checkout@v4
+        with:
+          repository: dakiishu-boop/kabuscout-backup
+          ref: ${{ github.event.inputs.backup_branch || 'latest' }}
+          path: _backup
+          ssh-key: ${{ secrets.BACKUP_DEPLOY_KEY }}
+          fetch-depth: 1
+
+      - name: Restore irreplaceable data from backup
+        if: github.event.inputs.restore_from_backup == 'true' && steps.cache.outputs.cache-matched-key == ''
+        run: python -m kabuscout restore --from _backup && rm -rf _backup
       - name: Research
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -50,11 +78,28 @@ jobs:
           ARGS: ${{ github.event.inputs.args }}
           COMMAND: ${{ github.event.inputs.command || (github.event.schedule == '0 0 * * 0' && 'research-ai') || 'research' }}
         run: python -m kabuscout "$COMMAND" $ARGS
+      # 成功したときだけ保存する（失敗した実行の書きかけのファイルを翌日に引き継がない）
       - uses: actions/cache/save@v4
-        if: always()
         with:
           path: data
           key: kabuscout-data-${{ github.run_id }}
+
+      # 取り直せないデータ（DB・需給・決算短信の数値・J-Quants・全候補の記録）を private のリポジトリに控える（kabuscout/backup.py）
+      - name: Backup key missing
+        if: env.HAS_BACKUP_KEY != 'true'
+        run: echo "::warning::BACKUP_DEPLOY_KEY が未登録のため、取り直せないデータのバックアップをしていません（docs/RESTORE.md）"
+      - name: Check out backup repository
+        if: env.HAS_BACKUP_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: dakiishu-boop/kabuscout-backup
+          ref: latest
+          path: _backup
+          ssh-key: ${{ secrets.BACKUP_DEPLOY_KEY }}
+          fetch-depth: 1
+      - name: Back up irreplaceable data
+        if: env.HAS_BACKUP_KEY == 'true'
+        run: python -m kabuscout backup --repo-dir _backup && rm -rf _backup
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

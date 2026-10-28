@@ -10,6 +10,10 @@
   site         Webページだけ作り直す（site/index.html）
   research     研究ループ（過去データで戦略の条件を調整）→ 再学習 → 過去ペーパートレード → 通知
   backtest     過去ペーパートレードだけ実行
+  backup --repo-dir DIR   取り直せないデータを private のバックアップ用リポジトリ（checkout 済み）に送る
+  restore --from DIR      バックアップ（checkout 済み）を確かめてから data/ に戻す（--force で上書き）
+  backup-drill --from DIR 試し戻し（一時フォルダに戻して確かめる。結果を Discord に送る）
+  remind-push  最後の push から45日を過ぎていたら Discord で知らせる（60日で定時実行が止まるため）
 """
 from __future__ import annotations
 
@@ -28,7 +32,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "research-ai", "flows"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -36,6 +40,8 @@ def main(argv=None):
     ap.add_argument("--trials", type=int)
     ap.add_argument("--budget-min", type=float)
     ap.add_argument("--probe", action="store_true", help="J-Quants: どのデータが取れるかを確かめ直す")
+    ap.add_argument("--repo-dir", help="backup: バックアップ用リポジトリの checkout 先")
+    ap.add_argument("--from", dest="src", help="restore / backup-drill: バックアップの checkout 先")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     cfg = load_config()
@@ -100,6 +106,29 @@ def main(argv=None):
     elif a.command == "edinet":
         from . import edinet
         print(edinet.update(cfg, max_minutes=a.budget_min or 30))
+    elif a.command == "backup":
+        from pathlib import Path
+        from . import backup
+        print(backup.push(cfg, Path(a.repo_dir)))
+    elif a.command == "restore":
+        from pathlib import Path
+        from . import backup
+        print(backup.restore(cfg, Path(a.src), force=a.force))
+    elif a.command == "backup-drill":
+        from pathlib import Path
+        from . import backup
+        v = backup.drill(Path(a.src))
+        print(v)
+        body = (f"{'✅ 戻せることを確認' if v['ok'] else '🔴 戻せない: ' + '; '.join(v['problems'][:5])}\n"
+                f"写しの日時 {v['created_at']}・ファイル {v['files']}個・決済済みのペーパートレード {v.get('paper_closed')}件・"
+                f"全候補の記録 {v.get('scored_files')}日分")
+        if not a.no_notify:
+            notify.send_text(cfg, "🧯 KabuScout バックアップの試し戻し", body)
+        if not v["ok"]:
+            sys.exit(1)
+    elif a.command == "remind-push":
+        from . import backup
+        print(f"最後の push から {backup.remind_push(cfg)} 日")
     if a.command in ("jquants", "edinet", "evaluate-jquants", "survivorship", "tdnet", "train", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "flows"):  # データ取得だけの実行でも Webページの公開手順が失敗しないように
         from . import site
         site.build(connect(cfg["data"]["db_path"]), cfg)

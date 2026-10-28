@@ -1,0 +1,40 @@
+# バックアップの試し戻し（月1回）: private のリポジトリの写しを一時フォルダに戻し、指紋・DBの壊れ・行数・読めるかを確かめて
+# Discord に結果を送る。戻したことのないバックアップは、本当に使えるか分からないため（kabuscout/backup.py の drill）
+name: backup-drill
+
+on:
+  schedule:
+    - cron: "0 1 1 * *"   # 毎月1日 10:00 JST
+  workflow_dispatch:
+    inputs:
+      backup_branch:
+        description: "確かめるバックアップ（latest / daily-mon〜fri / weekly-0〜3 / monthly-01〜12）"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - uses: actions/checkout@v4
+        with:
+          repository: dakiishu-boop/kabuscout-backup
+          ref: ${{ github.event.inputs.backup_branch || 'latest' }}
+          path: _backup
+          ssh-key: ${{ secrets.BACKUP_DEPLOY_KEY }}
+          fetch-depth: 1
+      - name: Restore into a temporary folder and verify
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python -m kabuscout backup-drill --from _backup

@@ -133,6 +133,9 @@ def to_markdown(rep: dict) -> str:
             c = pt["core"]
             L.append(f"  指数（{c['name']}）: {c['value']:,.0f}円（{c['ret']:+.1%}） → 合計 {pt['equity'] + c['value']:,.0f}円")
         L += [f"  ・{e}" for e in pt["events"]]
+    if rep.get("forward"):
+        from .forward import text as fw_text
+        L.append(f"全候補の答え合わせ: {fw_text(rep['forward'])}")
     return "\n".join(L)
 
 
@@ -194,6 +197,10 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
         lines.append(f"通知した上位5件の答え合わせ: {lv['n']}件 勝率 {lv['win']:.0%} / 平均 {lv['ret']:+.2%}")
     if rep["hot"]:
         lines.append("🔥 最近効いている戦略: " + " / ".join(f"{n}" for n, _ in rep["hot"]))
+    if rep.get("forward"):
+        from .forward import text as fw_text
+        lines.append("全候補の答え合わせ: " + fw_text(rep["forward"]))
+        lines += [f"影の判定: {x}" for x in rep["forward"].get("settled") or []]
     if lines:
         embeds.append(dict(title="🧠 AIの状態", color=0x9467BD, description="\n".join(lines),
                            footer=dict(text="※売買の判断はご自身で。過去の傾向は将来を保証しません。")))
@@ -247,13 +254,13 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
     s = bt["stats"]
     M = (summary or {}).get("model")
     if M and M.get("trials"):
-        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if M['adopted'] else '・'} **AIのモデル設定**（{M['trials']}通り／累計{M['cum_trials']}）: {M['reason']}")[:4000]
+        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if M['adopted'] else '👥' if M.get('shadowed') else '・'} **AIのモデル設定**（{M['trials']}通り／累計{M['cum_trials']}）: {M['reason']}")[:4000]
     F = (summary or {}).get("features")
     if F and F.get("trials"):
-        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if F['adopted'] else '・'} **AIの特徴量**（{F['trials']}通り／累計{F['cum_trials']}）: {F['reason']}")[:4000]
+        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if F['adopted'] else '👥' if F.get('shadowed') else '・'} **AIの特徴量**（{F['trials']}通り／累計{F['cum_trials']}）: {F['reason']}")[:4000]
     P = (summary or {}).get("specialists")
     if P and P.get("trials"):
-        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if P['adopted'] else '・'} **専門モデル**（{P['trials']}通り／累計{P['cum_trials']}）: {P['reason']}")[:4000]
+        embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if P['adopted'] else '👥' if P.get('shadowed') else '・'} **専門モデル**（{P['trials']}通り／累計{P['cum_trials']}）: {P['reason']}")[:4000]
     W = (summary or {}).get("weak_consensus")
     if W and W.get("trials"):
         embeds[0]["description"] = (embeds[0]["description"] + f"\n{'✅' if W['adopted'] else '・'} **弱い相場の合意モード**（{W['trials']}通り／累計{W['cum_trials']}）: {W['reason']}")[:4000]

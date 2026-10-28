@@ -357,6 +357,8 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
         log.warning("指数との組み合わせの計算に失敗: %s", e)
     from .health import expectation
     res["expect"] = expectation(ai["trades"])  # 実際のペーパートレードが想定どおりかの判定に使う（health.py）
+    from .forward import reference
+    res["forward_ref"] = reference(preds)  # 全候補の順位の質の前向きの答え合わせで比べる、過去の週ごとの値（forward.py）
     (cfg["data"]["db_path"].parent / "backtest.json").write_text(json.dumps(res, ensure_ascii=False))
     res["_preds"], res["_cal"] = preds, cal
     log.info("過去ペーパートレード: 年率 %+.1f%%（ランダム %+.1f%% / 日経平均 %+.1f%%）最大下落 %.1f%%",

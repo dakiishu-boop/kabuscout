@@ -578,6 +578,15 @@ def _save_param(cfg: dict, key: str, value, label: str) -> None:
     p.write_text(json.dumps(saved, ensure_ascii=False, indent=1))
 
 
+def _to_shadow(cfg: dict, res: dict, kind: str, value, label: str) -> None:
+    """研究ループで合格したAIの変更を、本番ではなく影に登録する（判定日に基準を満たせば本番へ昇格。shadow.py）。
+    本番の設定は変わらないので、この後の再学習・過去ペーパートレードは現行のまま。"""
+    from . import shadow
+    v = shadow.register_from_research(cfg, kind, value, label, res["reason"])
+    res.update(adopted=False, shadowed=True, shadow=v,
+               reason=f"影で試験運用へ（判定 {v['judge']}）: " + res["reason"].replace("採用", "合格", 1))
+
+
 def model_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex) -> dict:
     """AIのモデル設定（正則化の強さ）を、過去ペーパートレード全体の年ごとの成績で比べる（安全装置は同じ）。
     ラウンド9の裏取りで、正則化の弱い設定の方が良く見えたが、何通りか見て一番を選ぶのは選択バイアスなので、
@@ -585,16 +594,17 @@ def model_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex) -> dic
     inc = learner.model_params(cfg)
     name = lambda r: f"葉{r['p']['max_leaf_nodes']}・最小{r['p']['min_samples_leaf']}件・学習率{r['p']['learning_rate']}"
     inc_row = dict(_wf_row(cfg, ds, cal, params=inc), p=inc)
-    rows = [dict(_wf_row(cfg, ds, cal, params=p), p=p) for p in learner.CANDIDATES if p != inc]
+    from . import shadow
+    rows = [dict(_wf_row(cfg, ds, cal, params=p), p=p) for p in learner.CANDIDATES if p != inc and p not in shadow.in_shadow(cfg, "model_params")]
     for r in [inc_row] + rows:
         log.info("  モデル設定 %s: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", name(r), r["stats"]["cagr"] * 100,
                  r["stats"]["max_dd"] * 100, r["vault"] * 100)
     res = _judge(con, cfg, "_model", "AIのモデル設定", inc_row, rows, name)
     winner = inc_row
-    if res["adopted"]:
-        winner = res.pop("winner")
-        res["candidate"] = winner["p"]
-        _save_param(cfg, "model_params", winner["p"], "AIのモデル設定")
+    if res["adopted"]:  # いきなり本番に入れず、影で前向きに走らせてから昇格する（shadow.py）
+        w = res.pop("winner")
+        res["candidate"] = w["p"]
+        _to_shadow(cfg, res, "model_params", w["p"], f"AIのモデル設定（{name(w)}）")
     res["_preds"], res["_row"] = winner["preds"], winner
     return res
 
@@ -606,7 +616,9 @@ def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_
     # 自前の利益の予想（forecast.FC_FEATURES）は、AIに足すと4つの種すべてで悪化したので候補にしない（ジャーナル 47）
     groups = {"値動き・出来高の追加特徴量": CANDIDATE_FEATURES, "財務（EDINET: PBR・PER・ROEなど）": FIN_FEATURES}
     have = set(cfg["learning"].get("extra_features") or [])
-    groups = {k: v for k, v in groups.items() if not set(v) <= have}
+    from . import shadow
+    shadowed = [set(x) for x in shadow.in_shadow(cfg, "extra_features")]
+    groups = {k: v for k, v in groups.items() if not set(v) <= have and not any(set(v) <= x for x in shadowed)}
     # データがまだ揃っていない候補は試さない（試行回数だけ増えて合格ラインが上がるため）。直近8年のシグナルの3割以上に値があること
     recent = ds[ds["date"] >= ds["date"].max() - pd.Timedelta(days=365 * 8)]
     groups = {k: v for k, v in groups.items() if all(f in recent and recent[f].notna().mean() >= 0.3 for f in v)}
@@ -620,11 +632,10 @@ def feature_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, inc_
                  r["stats"]["max_dd"] * 100, r["vault"] * 100)
     res = _judge(con, cfg, "_features", "AIの特徴量", inc_row, rows, name)
     preds, row = inc_row["preds"], inc_row
-    if res["adopted"]:
+    if res["adopted"]:  # 本番ではなく影へ
         w = res.pop("winner")
         res["candidate"] = sorted(have | set(w["add"]))
-        _save_param(cfg, "extra_features", res["candidate"], "AIの特徴量")
-        preds, row = w["preds"], w
+        _to_shadow(cfg, res, "extra_features", res["candidate"], f"AIの特徴量（{name(w)}）")
     res["_preds"], res["_row"] = preds, row
     return res
 
@@ -635,7 +646,9 @@ def specialist_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, i
     決めるのに使っていない 2008〜2015年 では差が無かった（当時は学習データが少ない）ので、ここで判定させる。"""
     from .strategies import STRATEGY_NAMES
     have = learner.specialists(cfg)
-    cands = [k for k in learner.SPECIALIST_CANDIDATES if k not in have]
+    from . import shadow
+    shadowed = {k for x in shadow.in_shadow(cfg, "specialists") for k in x}
+    cands = [k for k in learner.SPECIALIST_CANDIDATES if k not in have and k not in shadowed]
     if not cands:
         return dict(adopted=False, reason="候補なし（すべて採用済み）", trials=0, cum_trials=0, _preds=inc_row["preds"])
     rows = [dict(_wf_row(cfg, ds, cal, specialists=have + [k]), k=k) for k in cands]
@@ -644,11 +657,10 @@ def specialist_search(con, cfg: dict, ds: pd.DataFrame, cal: pd.DatetimeIndex, i
         log.info("  %s: 年率 %+.1f%%・最大下落 %.1f%%・金庫 %+.1f%%", name(r), r["stats"]["cagr"] * 100, r["stats"]["max_dd"] * 100, r["vault"] * 100)
     res = _judge(con, cfg, "_specialists", "専門モデル", inc_row, rows, name)
     preds = inc_row["preds"]
-    if res["adopted"]:
+    if res["adopted"]:  # 本番ではなく影へ
         w = res.pop("winner")
         res["candidate"] = have + [w["k"]]
-        _save_param(cfg, "specialists", res["candidate"], "専門モデル")
-        preds = w["preds"]
+        _to_shadow(cfg, res, "specialists", res["candidate"], name(w))
     res["_preds"] = preds
     return res
 

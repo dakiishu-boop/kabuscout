@@ -150,6 +150,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
         log.info("上場廃止のおそれがある銘柄を候補から除外: %s", ", ".join(f"{c}（{danger[c]}）" for c in today["code"] if c in danger))
         today = today[~today["code"].isin(danger)]
     scored = learner.score(today, bundle, weights)
+    try:  # その日の全候補の予測を残す（追記だけ）。影の候補も同じ候補に点を付けて並べる（本番の判断には使わない）
+        from . import forward, shadow
+        forward.save(cfg, scored, data_date, shadow.score(scored, shadow.ensure(cfg, ds, data_date, train=False)))
+    except Exception as e:
+        log.warning("全候補の記録に失敗（本番は続行）: %s", e)
     top = scored.head(cfg["screening"]["top_n"]).copy()
     top["name"] = top["code"].map(names).fillna("")
     top["sector"] = top["code"].map(dict(zip(uni["code"], uni["sector33"]))).fillna("?")
@@ -178,6 +183,12 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
         pt["health"] = health.check(con, cfg)
         pt["core"] = core.step(cfg, last)  # 資金の一部を指数に固定する設定のとき（既定はなし）
     rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
+    try:  # 全候補の順位の質の答え合わせ（影の候補の比較・特徴量の食い違いも）
+        from . import forward, shadow
+        rep["forward"] = forward.evaluate(cfg, ds)
+        rep["forward"]["settled"] = shadow.settle(cfg, rep["forward"])
+    except Exception as e:
+        log.warning("全候補の答え合わせに失敗（本番は続行）: %s", e)
     con.execute("INSERT OR REPLACE INTO summaries VALUES (?,?)", (data_date, json.dumps(rep, ensure_ascii=False, default=float)))
     con.commit()
     md = report.to_markdown(rep)
@@ -189,6 +200,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     con.commit()
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
     print("\n" + md)
+    try:  # 影のモデルの学習は通知の後（数分かかるので通知を遅らせない。翌日の採点から使う）
+        from . import shadow
+        shadow.ensure(cfg, ds, data_date)
+    except Exception as e:
+        log.warning("影のモデルの学習に失敗（本番は続行）: %s", e)
     if collect:
         collect_extra(cfg, uni)
     return dict(date=data_date, top=top, n_signals=len(today))
@@ -287,7 +303,7 @@ def _research_ai(cfg: dict, con, ds: pd.DataFrame, pl: pd.DataFrame, cal: pd.Dat
         rj.write_text(json.dumps(j, ensure_ascii=False, default=float))
     site.build(con, cfg)
     if notify_on:
-        lines = [f"{'✅' if r['adopted'] else '・'} **{name}**（{r['trials']}通り／累計{r['cum_trials']}）: {r['reason']}"
+        lines = [f"{'✅' if r['adopted'] else '👥' if r.get('shadowed') else '・'} **{name}**（{r['trials']}通り／累計{r['cum_trials']}）: {r['reason']}"
                  for name, r in (("AIの特徴量", fs), ("専門モデル", sp)) if r.get("trials")]
         notify.send_text(cfg, "🔬 KabuScout 日曜の研究（AIの特徴量・専門モデル）", "\n".join(lines) or "判定する候補はありませんでした")
 

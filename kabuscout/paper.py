@@ -35,7 +35,7 @@ def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: flo
         if k >= H:
             return idx[i], c, "期限", k
         pending = stop == "close" and c <= sl
-    return None, None, None, len(idx) - start
+    return None, None, None, int(len(idx) - start)  # numpy の整数のままだと SQLite に文字の塊（blob）で入り、Webに b'\x01…' と出る
 
 
 def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp, crisis: bool = False,

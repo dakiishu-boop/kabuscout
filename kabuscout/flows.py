@@ -126,14 +126,22 @@ def collect_lending(cfg: dict) -> int:
     x.columns = ["date", "code", "excess", "max_rate", "rate"]
     x = x.dropna(subset=["code"])
     x["date"] = pd.to_datetime(x["date"].astype(str), format="%Y%m%d", errors="coerce")
-    x["code"] = x["code"].astype(str).str.strip().str[:4]
+    x["code"] = _common_code(x["code"])
     for c in ("excess", "max_rate", "rate"):
         x[c] = pd.to_numeric(x[c], errors="coerce")  # "*****" = 品貸料なし → 空欄
-    x = x.dropna(subset=["date"])
+    x = x.dropna(subset=["date", "code"])
     if len(old) and x["date"].iloc[0] in set(old["date"]):
         return 0
-    pd.concat([old, x], ignore_index=True).to_parquet(path)
+    # 以前の分に残っている同じ日・同じコードの2行目（優先株）も落とす。ファイルはコード順なので先の行が普通株
+    pd.concat([old, x], ignore_index=True).drop_duplicates(["date", "code"], keep="first").to_parquet(path)
     return 1
+
+
+def _common_code(s: pd.Series) -> pd.Series:
+    """証券コードを4桁にする。5桁で末尾が0でないもの（優先株など。例: 伊藤園の 25935）は NaN にする。
+    普通株（25930）と同じ4桁になって同じ日に2行でき、2026-10-28 の品貸料で毎日の実行が止まった。"""
+    s = s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    return s.str[:4].where(~((s.str.len() == 5) & ~s.str.endswith("0")))
 
 
 def collect(cfg: dict) -> dict:
@@ -153,11 +161,12 @@ def snapshot(cfg: dict) -> pd.DataFrame:
     d = _dir(cfg)
     cols = ["buy_pct", "sell_pct", "margin_ratio", "buy_pct_chg5", "short_total", "short_filers"]
     out = pd.DataFrame(columns=cols)
+    one = lambda x: x[~x.index.duplicated(keep="first")]  # 同じコードが2行あっても1行に（銘柄ごとに引けるように）
     if (d / "margin.parquet").exists():
-        m = pd.read_parquet(d / "margin.parquet").sort_values("date")
-        last = m[m["date"] == m["date"].max()].set_index("code")
+        m = pd.read_parquet(d / "margin.parquet").sort_values("date", kind="stable")
+        last = one(m[m["date"] == m["date"].max()].set_index("code"))
         dates = sorted(m["date"].unique())
-        prev = m[m["date"] == dates[max(0, len(dates) - 6)]].set_index("code")
+        prev = one(m[m["date"] == dates[max(0, len(dates) - 6)]].set_index("code"))
         out = pd.DataFrame(index=last.index)
         out["buy_pct"], out["sell_pct"] = last["buy_pct"], last["sell_pct"]
         out["margin_ratio"] = (last["buy"] / last["sell"].replace(0, np.nan)).round(2)
@@ -170,7 +179,7 @@ def snapshot(cfg: dict) -> pd.DataFrame:
         out = out.join(agg, how="outer")
     if (d / "lending.parquet").exists():
         lp = pd.read_parquet(d / "lending.parquet")
-        last = lp[lp["date"] == lp["date"].max()].set_index("code")
+        last = one(lp[lp["date"] == lp["date"].max()].set_index("code"))
         out = out.join(last[["rate"]].rename(columns={"rate": "lending_fee"}), how="outer")
     return out
 

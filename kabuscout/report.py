@@ -101,6 +101,13 @@ def _earn(p, limit=14):
     return f"⚠️決算まで{e}日" if e is not None and e <= limit else ""
 
 
+def _swap_text(pt: dict) -> str:
+    """比較用の口座（決算好反応の入れ替え、ジャーナル 64）の一行。本番の口座との差はルールの違いの分。"""
+    s = pt["swap"]
+    return (f"決算好反応の入れ替えの口座: 評価額 {s['equity']:,.0f}円（本番との差 {s['equity'] - pt['equity']:+,.0f}円・"
+            f"入れ替え {s.get('swaps', 0)}回・最高値から {s.get('drawdown', 0):+.1%}）")
+
+
 # ---------------------------------------------------------------- Markdown（ログ・レポートファイル用）
 def to_markdown(rep: dict) -> str:
     m = rep["market"]
@@ -133,6 +140,9 @@ def to_markdown(rep: dict) -> str:
             c = pt["core"]
             L.append(f"  指数（{c['name']}）: {c['value']:,.0f}円（{c['ret']:+.1%}） → 合計 {pt['equity'] + c['value']:,.0f}円")
         L += [f"  ・{e}" for e in pt["events"]]
+        if pt.get("swap"):
+            L.append(f"  {_swap_text(pt)}")
+            L += [f"    ・{e}" for e in pt["swap"]["events"]]
     if rep.get("forward"):
         from .forward import text as fw_text
         L.append(f"全候補の答え合わせ: {fw_text(rep['forward'])}")
@@ -187,7 +197,8 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
                 dict(name="勝率", value=wr, inline=True),
                 dict(name="最高値からの下落", value=f"{pt.get('drawdown', 0):+.1%}", inline=True),
             ] + ([dict(name="健康診断（過去の想定との比較）", value=_health_text(pt["health"]), inline=False)] if pt.get("health") else [])
-              + ([dict(name=f"指数の部分（{pt['core']['name']}）", value=f"{pt['core']['value']:,.0f}円（{pt['core']['ret']:+.1%}）／合計 {pt['equity'] + pt['core']['value']:,.0f}円", inline=False)] if pt.get("core") else [])))
+              + ([dict(name=f"指数の部分（{pt['core']['name']}）", value=f"{pt['core']['value']:,.0f}円（{pt['core']['ret']:+.1%}）／合計 {pt['equity'] + pt['core']['value']:,.0f}円", inline=False)] if pt.get("core") else [])
+              + ([dict(name="比較用の口座（本番の判断には使わない）", value=(_swap_text(pt) + "".join(f"\n• {e}" for e in pt["swap"]["events"]))[:1024], inline=False)] if pt.get("swap") else [])))
     lines = []
     if rep["model"]:
         mo = rep["model"]

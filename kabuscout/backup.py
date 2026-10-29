@@ -2,7 +2,7 @@
 
 data/ は GitHub Actions のキャッシュだけで引き継いでいる。キャッシュは7日間使われないと消え、公開リポジトリは60日間
 動きがないと定時実行が止まる。株価やシグナル表は取り直せるが、次のものは二度と取れないので毎日ここに控える:
-- kabuscout.db（ペーパートレード・通知した候補・モデルの記録）・scored/（その日の全候補の予測、forward.py）
+- kabuscout.db（ペーパートレード・通知した候補・モデルの記録）・scored/（その日の全候補の予測、forward.py）・scored_wide/（対象を広げたときの候補）
 - flows/（JPX の信用残は数日分しか公開されない）・tdnet_xbrl/（TDnet は書類を約1ヶ月で消す）
 - jquants/（無料版は過去2年分しか取れないので、貯めた分は取り直せない。J-Quants 由来なので公開の場所には置かない）
 - strategy_params.json（研究ループが採用した設定と影の候補）、forward.json・backtest.json・research.json など小さい結果
@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 log = logging.getLogger(__name__)
-ITEMS = ["kabuscout.db", "scored", "flows", "tdnet_xbrl", "jquants", "strategy_params.json", "alerts.json", "core.json",
+ITEMS = ["kabuscout.db", "scored", "scored_wide", "flows", "tdnet_xbrl", "jquants", "strategy_params.json", "alerts.json", "core.json",
          "forward.json", "backtest.json", "research.json"]
 BOT = ["-c", "user.name=kabuscout-bot", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com"]
 

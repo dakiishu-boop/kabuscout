@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS paper_positions(
 );
 -- ペーパートレードの毎日の評価額（含み損益込み）。最高値からの下落を測る
 CREATE TABLE IF NOT EXISTS paper_equity(date TEXT PRIMARY KEY, equity REAL, capital REAL);
+-- 比較用のペーパートレード口座（決算好反応の上位候補が枠の満杯で見送りになる日は、点が一番低い保有と入れ替える。
+-- 本番の判断には使わない・ジャーナル 64）。列は paper_positions と同じ ＋ 注文した時の点（score）・入れ替えで売ると決めた日（sell_date）
+CREATE TABLE IF NOT EXISTS paper_swap_positions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, signal_date TEXT, status TEXT,
+  entry_date TEXT, entry REAL, shares INTEGER, tp REAL, sl REAL, atr REAL,
+  exit_date TEXT, exit REAL, pnl REAL, reason TEXT, prob REAL, days_held INTEGER DEFAULT 0,
+  horizon INTEGER, tp_atr REAL, sl_atr REAL, capital REAL, score REAL, sell_date TEXT
+);
+CREATE TABLE IF NOT EXISTS paper_swap_equity(date TEXT PRIMARY KEY, equity REAL, capital REAL);
 -- その日の通知内容（Webページの「過去の結果」表示用）
 CREATE TABLE IF NOT EXISTS summaries(data_date TEXT PRIMARY KEY, json TEXT);
 CREATE TABLE IF NOT EXISTS runs(

@@ -31,14 +31,18 @@ TOP_Q = 0.9        # 上位10%
 MATURE_DAYS = 10   # 特徴量の食い違いを調べるのは、この営業日数より前の日（直近は後から届くデータで変わりうるので結果と一緒に見る）
 
 
-def log_dir(cfg: dict):
-    d = cfg["data"]["db_path"].parent / "scored"
+WIDE_MIN_TURNOVER = 5e7  # 対象を広げたときの売買代金の下限（ジャーナル 37: 5,000万円以上は年率 +15.9% vs +10.7%、最大下落は深い）
+
+
+def log_dir(cfg: dict, sub: str = "scored"):
+    d = cfg["data"]["db_path"].parent / sub
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def save(cfg: dict, scored: pd.DataFrame, data_date: str, shadows: dict | None = None) -> str:
-    """その日の全候補（AIの点・モデルの版・特徴量・影の点）を追記する。同じ名前のファイルがあっても上書きしない。"""
+def save(cfg: dict, scored: pd.DataFrame, data_date: str, shadows: dict | None = None, sub: str = "scored") -> str:
+    """その日の全候補（AIの点・モデルの版・特徴量・影の点）を追記する。同じ名前のファイルがあっても上書きしない。
+    sub="scored_wide": 対象を広げたときの候補（record_wide）。"""
     run_at = datetime.now().astimezone()
     df = scored.copy()
     df["live_rank"] = np.arange(1, len(df) + 1)  # 本番の並び順（final_score の高い順）
@@ -49,18 +53,39 @@ def save(cfg: dict, scored: pd.DataFrame, data_date: str, shadows: dict | None =
     for c in df.columns:  # 文字列以外の object 列（None 混じりなど）を parquet に書けるように
         if df[c].dtype == object and not df[c].map(lambda v: v is None or isinstance(v, str)).all():
             df[c] = df[c].astype(str)
-    base = log_dir(cfg) / f"{data_date}_{run_at.strftime('%Y%m%dT%H%M%S')}"
+    base = log_dir(cfg, sub) / f"{data_date}_{run_at.strftime('%Y%m%dT%H%M%S')}"
     path, k = base.with_suffix(".parquet"), 1
     while path.exists():
         path, k = base.parent / f"{base.name}_{k}.parquet", k + 1
     df.to_parquet(path, index=False)
-    log.info("全候補の予測を記録: %s（%d件）", path.name, len(df))
+    log.info("全候補の予測を記録: %s/%s（%d件）", sub, path.name, len(df))
     return path.name
 
 
-def load(cfg: dict, first_only: bool = True) -> pd.DataFrame | None:
+def record_wide(cfg: dict, store, uni: pd.DataFrame, today: pd.DataFrame, bundle: dict | None, weights: dict,
+                last: pd.Timestamp) -> str:
+    """対象を広げたとき（売買代金の下限 1億円 → 5,000万円）の候補にも本番のAIで点を付け、記録だけする（学習・売買・通知には使わない）。
+    AIの点はその日の候補の中での順位なので、5,000万〜1億円の候補（band=1）をその日の本番の候補（band=0）と一緒に採点し直す
+    ＝広げた場合の順位。結果は後で株価から計算できるので、「広げたら上位に入る候補が実際にどうだったか」を、売買せずに前向きに
+    確かめられる（ジャーナル 37・64）。data/scored_wide/ に追記するだけ（上書きしない）。"""
+    import copy
+    from . import alerts, learner, pool
+    from .pipeline import dataset
+    c = copy.deepcopy(cfg)
+    c["universe"]["min_turnover_jpy"] = WIDE_MIN_TURNOVER
+    _, rows = pool.build_window(store, c, uni, (last - pd.Timedelta(days=pool.WARMUP_DAYS)).strftime("%Y-%m-%d"),
+                                last.strftime("%Y-%m-%d"), keep_from=last.strftime("%Y-%m-%d"))
+    band = dataset(cfg, rows[(rows["date"] == last) & (rows["turnover"] < cfg["universe"]["min_turnover_jpy"])])
+    danger = alerts.load(cfg, pd.Timestamp.today())
+    if danger:
+        band = band[~band["code"].isin(danger)]
+    both = pd.concat([today.assign(band=0), band.assign(band=1)], ignore_index=True)
+    return save(cfg, learner.score(both, bundle, weights), last.strftime("%Y-%m-%d"), sub="scored_wide")
+
+
+def load(cfg: dict, first_only: bool = True, sub: str = "scored") -> pd.DataFrame | None:
     """記録した全候補。first_only: 同じデータ日付を何度か実行していたら最初の実行だけ（最初の予測で答え合わせする）。"""
-    files = sorted(log_dir(cfg).glob("*.parquet"))
+    files = sorted(log_dir(cfg, sub).glob("*.parquet"))
     if not files:
         return None
     df = pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)

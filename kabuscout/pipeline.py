@@ -182,6 +182,14 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
         from . import core, health
         pt["health"] = health.check(con, cfg)
         pt["core"] = core.step(cfg, last)  # 資金の一部を指数に固定する設定のとき（既定はなし）
+        try:  # 比較用の口座（決算好反応の入れ替え）。同じ候補を見て、口座全体のルールの違いだけを前向きに比べる（本番の判断には使わない。ジャーナル 64）
+            first = paper.start_from(con, "paper", "paper_swap")
+            sw = paper.step(con, cfg, ind, top, last, crisis=crisis, acct="paper_swap", swap=True)
+            sw["events"] = first + sw["events"]
+            sw["swaps"] = con.execute("SELECT COUNT(*) FROM paper_swap_positions WHERE reason LIKE '入れ替え%'").fetchone()[0]
+            pt["swap"] = sw
+        except Exception as e:
+            log.warning("比較用の口座の更新に失敗（本番は続行）: %s", e)
     rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
     try:  # 全候補の順位の質の答え合わせ（影の候補の比較・特徴量の食い違いも）
         from . import forward, shadow
@@ -200,6 +208,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     con.commit()
     log.info("完了: %s 候補 %d 件（通知: %s）", data_date, len(today), ",".join(sent) or "なし")
     print("\n" + md)
+    try:  # 対象を広げたとき（売買代金5,000万〜1億円）の候補にも点を付けて記録だけする（学習・売買・通知には使わない。約2分なので通知の後）
+        from . import forward
+        forward.record_wide(cfg, store, uni, today, bundle, weights, last)
+    except Exception as e:
+        log.warning("対象を広げたときの候補の記録に失敗（本番は続行）: %s", e)
     if collect:
         collect_extra(cfg, uni)
     return dict(date=data_date, top=top, n_signals=len(today))

@@ -17,6 +17,34 @@ from .risk import order_shares, stop_review_threshold, tick_size
 log = logging.getLogger(__name__)
 
 
+def _rebase(then: float, now: float) -> float:
+    """記録した時の株価 ÷ 今のデータの同じ日の株価。Yahoo の株価は分割・併合で過去にさかのぼって調整されるので、
+    1 でなければその間に調整が入っている（1→2分割なら 2）。2% 未満は同じとみなす（分割の検知と同じ幅）。"""
+    r = then / now if now > 0 and then > 0 else 1.0
+    return r if abs(r - 1) >= 0.02 else 1.0
+
+
+def _ratio(ind: dict, p) -> float:
+    """保有の倍率: 記録の買値・利確・損切（買った時の単位）÷ 倍率 = 今のデータの単位。買った日の寄付を見比べて測る。"""
+    if p["code"] not in ind["open"].columns:
+        return 1.0
+    return _rebase(float(p["entry"]), float(ind["open"][p["code"]].reindex([pd.Timestamp(p["entry_date"])]).iat[0]))
+
+
+def _jumped(close: pd.Series) -> bool:
+    """最新の終値が前の日から30%超も飛んでいる: 値幅制限でほぼ起きない動きなので、分割の調整がまだ過去に及んでいないデータとみなす。
+    翌日のデータで調整が入る。本当の急落・急騰なら、翌日の実行でその日の日付のまま判定される。"""
+    return len(close) >= 2 and not 0.7 <= float(close.iat[-1]) / float(close.iat[-2]) <= 1.4
+
+
+def _last_px(ind: dict, p) -> float:
+    """保有の今の株価（買った時の単位で）。データが無ければ買値。"""
+    last = ind["close"][p["code"]].dropna() if p["code"] in ind["close"].columns else None
+    if last is None or not len(last):
+        return p["entry"]
+    return float(last.iat[-2 if _jumped(last) else -1]) * _ratio(ind, p)
+
+
 def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: float, H: int, stop: str = "intraday"):
     """entry_date から最新日まで1本ずつ進めて、決済されたら (日付, 価格, 理由, 保有日数) を返す。
     stop="intraday": 場中の逆指値（1ティック不利に約定） / stop="close": 終値で割ったら翌日の寄付で売る（過去の検証と同じ）"""
@@ -24,6 +52,8 @@ def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: flo
     start = idx.searchsorted(entry_date)
     pending = False
     for k, i in enumerate(range(start, len(idx)), start=1):
+        if k > 1 and i == len(idx) - 1 and _jumped(ind["close"][code].dropna()):
+            break
         o, h, l, c = (float(ind[f][code].iat[i]) for f in ("open", "high", "low", "close"))
         if stop == "close":
             if pending:
@@ -67,15 +97,17 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
             continue
         ed = idx[j]
         entry = float(ind["open"][p["code"]].iat[j])
+        then = con.execute("SELECT close FROM signals WHERE date=? AND code=?", (p["signal_date"], p["code"])).fetchone()
+        atr = p["atr"] / (_rebase(then[0], float(ind["close"][p["code"]].iat[j - 1])) if then and then[0] else 1.0)  # 注文の翌朝が権利落ち日のとき
         kt = p["tp_atr"] if pd.notna(p.get("tp_atr")) else k_tp
         ks = p["sl_atr"] if pd.notna(p.get("sl_atr")) else k_sl
-        shares = order_shares(pc, equity, cash, entry * (1 + half_cost), ks * p["atr"], slot) if np.isfinite(entry) else 0
+        shares = order_shares(pc, equity, cash, entry * (1 + half_cost), ks * atr, slot) if np.isfinite(entry) else 0
         if shares == 0:
             con.execute(f"UPDATE {P} SET status='cancelled', reason='資金不足' WHERE id=?", (p["id"],))
             continue
         cash -= shares * entry * (1 + half_cost)
         hz = int(p["horizon"]) if pd.notna(p.get("horizon")) else H
-        tp, sl = entry + kt * p["atr"], entry - ks * p["atr"]
+        tp, sl = entry + kt * atr, entry - ks * atr
         con.execute(f"UPDATE {P} SET status='open', entry_date=?, entry=?, shares=?, tp=?, sl=?, horizon=? WHERE id=?",
                     (ed.strftime("%Y-%m-%d"), entry, shares, tp, sl, hz, p["id"]))
         events.append(f"買 {p['code']} {p['name']} {shares}株 @{entry:,.0f}")
@@ -86,11 +118,13 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         if p["code"] not in ind["close"].columns:  # 上場廃止・データ欠落
             continue
         h = int(p["horizon"]) if pd.notna(p.get("horizon")) else H
-        ex_date, ex_px, why, held = _simulate(ind, p["code"], pd.Timestamp(p["entry_date"]), p["tp"], p["sl"], h,
+        r = _ratio(ind, p)  # 保有中の分割・併合: 判定は今のデータの単位で、記録は買った時の単位で
+        ex_date, ex_px, why, held = _simulate(ind, p["code"], pd.Timestamp(p["entry_date"]), p["tp"] / r, p["sl"] / r, h,
                                               stop=cfg["labeling"].get("stop_mode", "intraday"))
         if ex_date is None:
             con.execute(f"UPDATE {P} SET days_held=? WHERE id=?", (held, p["id"]))
             continue
+        ex_px *= r
         pnl = (ex_px * (1 - half_cost) - p["entry"] * (1 + half_cost)) * p["shares"]
         con.execute(f"UPDATE {P} SET status='closed', exit_date=?, exit=?, pnl=?, reason=?, days_held=? WHERE id=?",
                     (ex_date.strftime("%Y-%m-%d"), ex_px, pnl, why, held, p["id"]))
@@ -179,8 +213,7 @@ def _swap(con, cfg: dict, ind: dict, picks: pd.DataFrame, held: list[str], data_
         return []
     r, out = earn.iloc[0], pos.loc[pos["score"].fillna(np.inf).idxmin()]
     st = summary(con, cfg, ind, acct)
-    last = ind["close"][out["code"]].dropna() if out["code"] in ind["close"].columns else None
-    px_out = float(last.iat[-1]) if last is not None and len(last) else float(out["entry"])
+    px_out = float(_last_px(ind, out))
     stop = float(r.get("sl_atr", cfg["labeling"]["sl_atr"])) * float(r["atr"])
     n = order_shares(pc, st["equity"], st["cash"] + px_out * out["shares"] * (1 - half_cost), float(r["close"]) * (1 + half_cost),
                      stop, st["equity"] / pc["max_positions"])
@@ -201,11 +234,14 @@ def _sell_swapped(con, cfg: dict, ind: dict, P: str) -> list[str]:
         j = idx.searchsorted(pd.Timestamp(p["sell_date"]), side="right")
         if j >= len(idx) or p["code"] not in ind["close"].columns:
             continue
+        if j == len(idx) - 1 and _jumped(ind["close"][p["code"]].dropna()):
+            continue
         px = float(ind["open"][p["code"]].iat[j])
         if not np.isfinite(px):
             px = float(ind["close"][p["code"]].iat[j])
         if not np.isfinite(px):
             continue
+        px *= _ratio(ind, p)
         pnl = (px * (1 - half_cost) - p["entry"] * (1 + half_cost)) * p["shares"]
         days = int(j - idx.searchsorted(pd.Timestamp(p["entry_date"])) + 1)
         con.execute(f"UPDATE {P} SET status='closed', exit_date=?, exit=?, pnl=?, days_held=? WHERE id=?",
@@ -251,8 +287,7 @@ def summary(con, cfg: dict, ind: dict | None = None, acct: str = "paper") -> dic
     opened = pos[pos["status"].isin(["open", "selling"])]  # selling: 入れ替えで翌寄付に売る予定（比較用の口座だけ）
     unreal, value = 0.0, 0.0
     for _, p in opened.iterrows():
-        last = ind["close"][p["code"]].dropna() if ind is not None and p["code"] in ind["close"].columns else None
-        px = float(last.iat[-1]) if last is not None and len(last) else p["entry"]
+        px = _last_px(ind, p) if ind is not None else p["entry"]
         unreal += (px - p["entry"]) * p["shares"]
         value += px * p["shares"]
     realized = float(closed["pnl"].sum()) if len(closed) else 0.0

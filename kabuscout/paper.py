@@ -149,7 +149,20 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         if gate and gate_active(gate, float(ind["mkt_dev75"].iloc[-1].iloc[0]), float(ind["mkt_ret20"].iloc[-1].iloc[0]), crisis):
             n_new = min(n_new, gate["max_new"])
             events.append(f"地合いが弱いため新規の買いを控えています（{gate['name']}）")
-        for _, r in cand.head(n_new).iterrows():
+        # 100株で買えない候補（値段が高い・損失2%の上限）は飛ばして次の候補へ（過去の検証 backtest.simulate と同じ）。
+        # 以前は上位から注文して翌朝「資金不足」で取り消していたので、その日の枠が空いたままになっていた
+        st = summary(con, cfg, ind, acct)
+        avail = st["cash"]
+        for _, r in cand.iterrows():
+            if n_new <= 0:
+                break
+            px = float(r["close"]) * (1 + half_cost)
+            ks = float(r["sl_atr"]) if pd.notna(r.get("sl_atr")) else k_sl
+            n = order_shares(pc, st["equity"], avail, px, ks * float(r["atr"]), st["equity"] / pc["max_positions"])
+            if n <= 0:
+                continue
+            avail -= n * px
+            n_new -= 1
             _order(con, cfg, P, r, data_date, score=swap)
             events.append(f"注文 {r['code']} {r['name']} (翌寄付)")
     elif swap and free <= 0 and len(picks) and not already and not crisis:

@@ -41,7 +41,12 @@ log = logging.getLogger(__name__)
 # 銘柄スコアのモデルからは外す（地合いは通知文と戦略の重みで扱う）
 MARKET_FEATURES = ["mkt_dev75", "mkt_ret5", "mkt_ret20", "mkt_vol20", "breadth25", "sector_mom20"]
 # 財務（EDINET）の特徴量は、データが揃ってから研究ループが検証して採用するまで入れない（research.feature_search の候補）
-MODEL_FEATURES = [f for f in FEATURES if f not in MARKET_FEATURES] + EARN_FEATURES + EVENT_FEATURES + DIV_FEATURES + MODEL_MACRO_FEATURES + FLAG_COLS + ["n_strat"]
+# 過去のデータでは後から分かった値を使ってしまう特徴量（列は残すがモデルには入れない）。
+# earn_to_next（次の決算までの日数）は過去の検証では実際の決算日を120日先まで使っていた（ジャーナル §73）。
+# 本番では Yahoo に予定が載っている約3割の銘柄にしか値が無く、学習時（約8割に値あり）と見え方もずれていた
+LOOKAHEAD_FEATURES = ["earn_to_next"]
+MODEL_FEATURES = [f for f in [f for f in FEATURES if f not in MARKET_FEATURES] + EARN_FEATURES + EVENT_FEATURES + DIV_FEATURES
+                  + MODEL_MACRO_FEATURES + FLAG_COLS + ["n_strat"] if f not in LOOKAHEAD_FEATURES]
 
 # 強めの正則化ほど期間をまたいで安定した（実験結果）。学習に使うのは先頭の設定（過去ペーパートレードで確かめた設定）
 CANDIDATES = [
@@ -373,7 +378,11 @@ def train(con, cfg: dict, ds: pd.DataFrame, data_end: str) -> dict | None:
     # ---- チャンピオン（現役）との対決：両者にとって未知の期間で比較
     champ = load_active(con, cfg)
     verdict = "初回モデル"
-    if champ is not None:
+    if champ is not None and set(champ.get("features") or []) != set(model_features(cfg)):
+        # 特徴量の構成が変わった（コードの修正・研究ループの採用）ときは対決させない。
+        # 外した特徴量が先読みだった場合、旧モデルは比較期間でも先読みの分だけ有利になり、正しい新モデルが入れなくなる
+        verdict = "特徴量の構成が変わったため最新データで更新"
+    elif champ is not None:
         window = ho[ho["date"] > pd.Timestamp(champ["data_end"])]
         try:
             c_prob, c_sc = bundle_predict(champ, window)

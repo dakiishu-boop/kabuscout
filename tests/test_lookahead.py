@@ -127,3 +127,25 @@ def test_label_close_stop_sells_next_open():
     ind = _ind(); ind["close"].iloc[4] = 985; ind["low"].iloc[4] = 984; ind["open"].iloc[5] = 983
     r = _label(ind, 3, stop="close")
     assert (r["label"], r["exit_days"]) == (0, 2) and r["ret"] == pytest.approx(983 / 1000 - 1)
+
+
+def test_model_earnings_features_ignore_future_announcements():
+    """AI のモデルに入る決算の特徴量は、ある日より後の決算発表（日付）を足しても、その日までの値が変わらない。
+    earn_to_next は後から分かった発表日を使うので、モデルからは外してある（ジャーナル §73）"""
+    from kabuscout import earnings
+    idx = pd.bdate_range("2024-01-01", periods=300)
+    cols = ["1001", "1002"]
+    rng = np.random.default_rng(3)
+    close = pd.DataFrame(1000 * np.exp(np.cumsum(rng.normal(0, 0.01, (300, 2)), 0)), index=idx, columns=cols)
+    volume = pd.DataFrame(rng.integers(1000, 5000, (300, 2)).astype(float), index=idx, columns=cols)
+    mkt = pd.Series(np.exp(np.cumsum(rng.normal(0, 0.01, 300))), index=idx)
+    ev = pd.DataFrame({"code": ["1001", "1002"], "date": [idx[50], idx[120]], "surprise": [5.0, -3.0]})
+    later = pd.concat([ev, pd.DataFrame({"code": ["1001", "1002"], "date": [idx[T + 20], idx[T + 30]],
+                                         "surprise": [1.0, 2.0]})], ignore_index=True)
+    a = earnings.wide_features(ev, close, volume, mkt)
+    b = earnings.wide_features(later, close, volume, mkt)
+    used = [k for k in earnings.EARN_FEATURES if k in learner.MODEL_FEATURES]
+    assert used and "earn_to_next" not in learner.MODEL_FEATURES
+    changed = [k for k in used if not _same_until(a[k], b[k], T)]
+    assert not changed, f"後の決算発表で値が変わった、モデルの特徴量: {changed}"
+    assert not _same_until(a["earn_to_next"], b["earn_to_next"], T)  # 外した理由（先読み）が今も本当であること

@@ -101,7 +101,8 @@ def wide_features(ev: pd.DataFrame | None, close: pd.DataFrame, volume: pd.DataF
     - earn_surprise: EPS サプライズ率（%）
     - earn_vol: 発表翌日までの出来高の、それ以前20日平均に対する倍率
     - earn_age: 情報が使えるようになってからの営業日数（0=今日初めて使える）
-    - earn_to_next: 次の決算発表までの暦日数（発表日は事前に公表されるので先読みには当たらない）"""
+    - earn_to_next: 次の決算発表までの暦日数。過去の分は実際に後から分かった発表日を使うので先読みになる
+      （日本では発表日の公表は30〜45日前が多い）。AI のモデルには入れない（learner.LOOKAHEAD_FEATURES、ジャーナル §73）"""
     idx, cols = close.index, close.columns
     out = {k: pd.DataFrame(np.nan, index=idx, columns=cols, dtype="float32") for k in EARN_FEATURES}
     if ev is None or ev.empty:

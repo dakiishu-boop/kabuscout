@@ -52,9 +52,10 @@ def load(cfg: dict, today: pd.Timestamp) -> dict[str, str]:
     p = cfg["data"]["db_path"].parent / "alerts.json"
     try:
         codes = fetch(today)
-        if codes:  # 0件はページの形が変わった可能性が高いので保存しない
+        if codes:  # 0件はページの形が変わった可能性が高いので保存せず、前回の一覧を使う（0件で除外が止まらないように）
             p.write_text(json.dumps({"date": today.strftime("%Y-%m-%d"), "codes": codes}, ensure_ascii=False))
-        return codes
+            return codes
+        log.warning("JPX の監理・整理銘柄が0件（ページの形が変わった可能性。前回の一覧を使います）")
     except Exception as e:
         log.warning("JPX の監理・整理銘柄の取得に失敗（前回の一覧を使います）: %s", e)
     return json.loads(p.read_text())["codes"] if p.exists() else {}

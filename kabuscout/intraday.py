@@ -7,7 +7,7 @@ Yahoo は5分足を直近約60日分しか返さない（ジャーナル §69）
 - 株価は分割調整していない（その日の実際の株価）
 - 同じ足をもう一度取ったら新しいほうで上書き。その日の取引が終わる前（15:40 より前）に動かしたら、その日の足は保存しない
 - Yahoo の利用条件により、取ったデータは手元だけで使い、公開リポジトリには入れない（data/ は git の対象外）
-使い方: python -m kabuscout.intraday（初回は60日分、以後は直近8日分） / --period 60d で取り直し
+使い方: python -m kabuscout.intraday（初回は60日分、以後は最後に貯めた足から＋3日分・最短8日） / --period 60d で取り直し
 """
 from __future__ import annotations
 
@@ -73,6 +73,18 @@ def merge_save(new: pd.DataFrame, folder: Path) -> dict[str, int]:
     return counts
 
 
+def auto_period(folder: Path, now: pd.Timestamp) -> str:
+    """取る期間: 初回は60日分。以後は最後に貯めた足からの日数＋3日（最短8日、最長60日）。
+    Mac が何日か止まっても、Yahoo に残っている60日以内なら取りこぼさない"""
+    files = sorted(folder.glob("*.parquet"))
+    if not files:
+        return "60d"
+    newest = pd.read_parquet(files[-1], columns=["datetime"])["datetime"].max()
+    if pd.isna(newest):
+        return "60d"
+    return f"{int(min(60, max(8, (now.normalize() - pd.Timestamp(newest).normalize()).days + 3)))}d"
+
+
 def universe_codes(cfg: dict) -> list[str]:
     with sqlite3.connect(str(cfg["data"]["db_path"])) as con:
         return [r[0] for r in con.execute("SELECT code FROM universe ORDER BY code")]
@@ -82,7 +94,7 @@ def collect(cfg: dict, period: str | None = None, chunk: int = 100, pause: float
     import yfinance as yf
     folder = out_dir(cfg)
     if period is None:
-        period = "8d" if any(folder.glob("*.parquet")) else "60d"
+        period = auto_period(folder, pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None))
     proxy = cfg["universe"]["market_proxy"]
     tickers = [f"{c}.T" for c in universe_codes(cfg)] + [proxy, "1321.T"]
     now = pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None)
@@ -121,7 +133,7 @@ def collect(cfg: dict, period: str | None = None, chunk: int = 100, pause: float
 def main(argv=None):
     from .config import load_config
     ap = argparse.ArgumentParser(description="全銘柄の5分足を Yahoo Finance から取って貯める（研究用）")
-    ap.add_argument("--period", default=None, help="取る期間（既定: 初回 60d、以後 8d）")
+    ap.add_argument("--period", default=None, help="取る期間（既定: 初回 60d、以後は最後に貯めた足から＋3日・最短 8d）")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     print(collect(load_config(), period=a.period))

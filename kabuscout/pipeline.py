@@ -198,6 +198,11 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
         except Exception as e:
             log.warning("比較用の口座の更新に失敗（本番は続行）: %s", e)
     rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
+    try:  # 取得に失敗しても実行は成功扱いになるデータ（適時開示など）の遅れを、通知の先頭で知らせる
+        from . import freshness
+        rep["stale"] = freshness.check(cfg, ind["close"].index)
+    except Exception as e:
+        log.warning("データの鮮度の確認に失敗（本番は続行）: %s", e)
     try:  # 全候補の順位の質の答え合わせ（影の候補の比較・特徴量の食い違いも）
         from . import forward, shadow
         rep["forward"] = forward.evaluate(cfg, ds)

@@ -116,6 +116,8 @@ def to_markdown(rep: dict) -> str:
          f"25日線より上の銘柄 {m['breadth25']:.0%}）", f"{rep['n_scanned']:,}銘柄を走査 → シグナル{rep['n_signals']}件", ""]
     if crisis_line(rep):
         L[2:2] = [crisis_line(rep)]
+    if rep.get("stale"):
+        L[2:2] = [f"⚠️ データの遅れ: {s}" for s in rep["stale"]] + [""]
     for p in rep["picks"]:
         prob = f" AI {p['prob']:.0%}" if p["prob"] is not None else ""
         L.append(f"{p['rank']}. **{p['code']} {p['name']}**【{'・'.join(p['strategies'])}】{prob} {_earn(p)}")
@@ -156,6 +158,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
         title=f"📈 KabuScout {rep['date_label']} 引け後スクリーニング",
         url=url, color=0x8B0000 if crisis_line(rep) else MOOD_COLOR[m["mood"]],
         description=(f"**{crisis_line(rep)}**\n\n" if crisis_line(rep) else "")
+                    + "".join(f"⚠️ **データの遅れ**: {s}\n" for s in rep.get("stale") or [])
                     + f"**{rep['n_scanned']:,}** 銘柄を走査 → シグナル **{rep['n_signals']}** 件"
                     + (f"\n🌐 [Webで詳しく見る（チャート・過去の結果）]({url})" if url else ""),
         fields=[
@@ -221,7 +224,8 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
 # ---------------------------------------------------------------- ntfy（短く）
 def ntfy_text(rep: dict, n: int = 5) -> str:
     m = rep["market"]
-    L = [f"地合い {m['mood']} / シグナル{rep['n_signals']}件"] + ([crisis_line(rep)] if crisis_line(rep) else [])
+    L = [f"地合い {m['mood']} / シグナル{rep['n_signals']}件"] + ([crisis_line(rep)] if crisis_line(rep) else []) \
+        + [f"⚠️ データの遅れ: {s}" for s in rep.get("stale") or []]
     for p in rep["picks"][:n]:
         prob = f" AI{p['prob']:.0%}" if p["prob"] is not None else ""
         L.append(f"{p['rank']}. {p['code']} {p['name']}｜{p['strategies'][0]}{prob}")

@@ -34,7 +34,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "tdnet-reasons", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push", "shadow-due", "shadow-train"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "tdnet-reasons", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push", "shadow-due", "shadow-train", "fill", "fills"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -44,6 +44,15 @@ def main(argv=None):
     ap.add_argument("--probe", action="store_true", help="J-Quants: どのデータが取れるかを確かめ直す")
     ap.add_argument("--repo-dir", help="backup: バックアップ用リポジトリの checkout 先")
     ap.add_argument("--from", dest="src", help="restore / backup-drill: バックアップの checkout 先")
+    # fill: 実際の約定を記録する（data/real_fills.csv、手元だけ。fills.py・ジャーナル 78）
+    ap.add_argument("--side", choices=["buy", "sell"])
+    ap.add_argument("--code")
+    ap.add_argument("--shares", type=int)
+    ap.add_argument("--price", type=float)
+    ap.add_argument("--kind", choices=["open", "close", "limit", "stop"], help="open/close = 寄付・引けの成行、limit = 指値、stop = 逆指値")
+    ap.add_argument("--ref", type=float, help="指値・逆指値の注文の値段")
+    ap.add_argument("--date", help="約定の日（省略時は今日）")
+    ap.add_argument("--note", default="")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     cfg = load_config()
@@ -60,6 +69,15 @@ def main(argv=None):
         if pl is None:
             sys.exit("シグナル表がありません。先に daily を実行してください")
         learner.train(con, cfg, dataset(cfg, pl), pl["date"].max().strftime("%Y-%m-%d"))
+
+    elif a.command == "fill":
+        from . import fills
+        if not (a.side and a.code and a.shares and a.price and a.kind):
+            sys.exit("--side --code --shares --price --kind が必要です（指値・逆指値は --ref も）")
+        print(fills.add(cfg, a.date or str(pd.Timestamp.today().date()), a.code, a.side, a.kind, a.shares, a.price, a.ref, a.note))
+    elif a.command == "fills":
+        from . import fills
+        print(fills.report(cfg))
 
     elif a.command == "notify-test":
         sent = notify.send_text(cfg, "KabuScout テスト通知", "通知の設定は正常です ✅")

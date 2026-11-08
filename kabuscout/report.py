@@ -291,9 +291,24 @@ def research_payload(summary: dict | None, bt: dict, url: str = "") -> dict:
                                      f"最大下落 {s['ai']['max_dd']:.0%}・最悪の年 {s['ai'].get('worst_year', float('nan')):+.0%}", inline=True),
             dict(name="ランダム選定", value=f"年率 {s['random']['cagr']:+.1%}\n最大下落 {s['random']['max_dd']:.0%}", inline=True),
             dict(name="日経平均を保有", value=f"年率 {s['index']['cagr']:+.1%}\n最大下落 {s['index']['max_dd']:.0%}", inline=True),
-        ],
-        footer=dict(text="戦略条件は過去で調整済み・現存銘柄のみ（生存者バイアス）のため実際より良く見えやすい点に注意")))
+        ] + _baseline_fields(bt),
+        footer=dict(text="戦略条件は過去で調整済み・現存銘柄のみ（生存者バイアス）・2018年以前は1,000株単位の銘柄を100株で買えたものとしているため、実際より良く見えやすい点に注意")))
     return {"username": "KabuScout", "embeds": embeds}
+
+
+def _baseline_fields(bt: dict) -> list[dict]:
+    """比べる基準の期間（2019年〜）と、取引コストの見積もりを変えた場合（ジャーナル 77・78）。"""
+    out = []
+    S = bt.get("since")
+    if S:
+        a = S["ai"]
+        out.append(dict(name=f"{S['start'][:4]}年以降（比べる基準）", value=f"年率 **{a['cagr']:+.1%}**・最大下落 {a['max_dd']:.0%}\n"
+                        f"日経平均 {S['index']['cagr']:+.1%}・Sharpe {a.get('sharpe') or 0:.2f}", inline=False))
+    C = bt.get("costs")
+    if C:
+        out.append(dict(name="往復コストを変えた場合（年率・全期間 ／ 基準の期間）",
+                        value="・".join(f"{c['cost']:.1%}: {c['all']['cagr']:+.1%} ／ {c['since']['cagr']:+.1%}" for c in C), inline=False))
+    return out
 
 
 def research_text(summary: dict | None, bt: dict) -> str:

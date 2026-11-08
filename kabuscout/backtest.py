@@ -90,6 +90,10 @@ def apply_plans(preds: pd.DataFrame, cfg: dict, store=None) -> pd.DataFrame:
     return preds.drop(columns="_plan").assign(_relabeled=1)
 
 
+BASE_START = "2019-01-01"  # 過去の検証を比べる基準の期間の始まり（売買単位の統一 2018-10-01 の後。ジャーナル 77）
+COST_SCENARIOS = (0.002, 0.003, 0.005)  # 往復の取引コストの見積もり（楽観・標準・厳しめ。ジャーナル 78）
+
+
 def gate_active(gate: dict | None, mkt_dev75: float, mkt_ret20: float, crisis: bool) -> bool:
     """地合いによる買い控えの条件に当てはまるか。"""
     if not gate:
@@ -133,16 +137,17 @@ def with_sectors(preds: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = "ai", seed: int = 0,
              gate: dict | None = "config", max_positions: int | None = None, picks_per_day: int | None = None,
-             account: dict | None = None, store=None) -> dict:
+             account: dict | None = None, store=None, cost: float | None = None) -> dict:
     """実際の口座と同じように、現金・株数（100株単位）・毎日の時価で資産を追う（最大下落も含み損込みで測る）。
     シグナル日の終値で株数を決めて注文し、翌営業日の寄付で約定、売買ルール（利確/損切/期限）で決済する。
-    株数の決め方は risk.order_shares（本番のペーパートレードと同じ）。account で資金などを差し替えて比較できる。"""
+    株数の決め方は risk.order_shares（本番のペーパートレードと同じ）。account で資金などを差し替えて比較できる。
+    cost: 往復の取引コスト（既定は research.cost）。コストの見積もりを変えたときの比較に使う（ジャーナル 77・78）。"""
     pc, rc = cfg["paper_trading"], cfg["research"]
     acc = {**pc, **(account or {})}
     if "capital_jpy" not in (account or {}):  # コア（指数）を持つ設定なら、AIで運用するのは残りの資金
         from .core import ai_capital
         acc["capital_jpy"] = ai_capital(cfg)
-    cap, half_cost = acc["capital_jpy"], rc["cost"] / 2
+    cap, half_cost = acc["capital_jpy"], (rc["cost"] if cost is None else cost) / 2
     maxp = max_positions or pc["max_positions"]
     per_day = picks_per_day or pc["picks_per_day"]
     scan = cfg["screening"]["top_n"]  # 1日に見る候補の数（本番の通知と同じ上位15銘柄）
@@ -265,16 +270,35 @@ def after_tax(eq: pd.Series, rate: float = 0.20315) -> float:
     return float((after / float(eq.iloc[0])) ** (1 / max(years, 1e-9)) - 1)
 
 
-def _stats(eq: pd.Series, trades: pd.DataFrame | None = None) -> dict:
+def _stats(eq: pd.Series, trades: pd.DataFrame | None = None, exposure: pd.Series | None = None) -> dict:
     years = (eq.index[-1] - eq.index[0]).days / 365.25
     dd = (eq / eq.cummax() - 1).min()
     ends = eq.groupby(eq.index.year).last()
     yearly = ends / np.r_[eq.iloc[0], ends.to_numpy()[:-1]] - 1
-    out = dict(cagr=float((eq.iloc[-1] / eq.iloc[0]) ** (1 / max(years, 1e-9)) - 1), max_dd=float(dd),
-               total=float(eq.iloc[-1] / eq.iloc[0] - 1), after_tax=after_tax(eq), worst_year=float(yearly.min()))
+    cagr = float((eq.iloc[-1] / eq.iloc[0]) ** (1 / max(years, 1e-9)) - 1)
+    r = eq.pct_change().dropna()
+    down = r[r < 0].std()
+    out = dict(cagr=cagr, max_dd=float(dd),
+               total=float(eq.iloc[-1] / eq.iloc[0] - 1), after_tax=after_tax(eq), worst_year=float(yearly.min()),
+               # リスクあたりの成績（日次、無リスク金利は0とみなす）。Calmar = 年率 ÷ 最大下落の大きさ
+               sharpe=float(r.mean() / r.std() * np.sqrt(252)) if len(r) > 1 and r.std() > 0 else None,
+               sortino=float(r.mean() / down * np.sqrt(252)) if len(r) > 1 and down > 0 else None,
+               calmar=float(cagr / abs(dd)) if dd < 0 else None)
     if trades is not None and len(trades):
-        out.update(trades=int(len(trades)), win=float((trades["net"] > 0).mean()), avg=float(trades["net"].mean()))
+        pnl = trades["pnl"] if "pnl" in trades else pd.Series(dtype=float)
+        gain, loss = float(pnl[pnl > 0].sum()), float(-pnl[pnl < 0].sum())
+        out.update(trades=int(len(trades)), win=float((trades["net"] > 0).mean()), avg=float(trades["net"].mean()),
+                   per_year=float(len(trades) / max(years, 1e-9)), profit_factor=float(gain / loss) if loss > 0 else None)
+    if exposure is not None and len(exposure):
+        out["exposure"] = float(exposure.mean())
     return out
+
+
+def period_stats(res: dict, start: str) -> dict:
+    """simulate の結果のうち start 以降だけの成績（資産はその日を起点に測り直す）。"""
+    eq, tr, ex = res["equity"], res["trades"], res.get("exposure")
+    k = eq.index >= pd.Timestamp(start)
+    return _stats(eq[k], tr[tr["date"] >= pd.Timestamp(start)], ex[ex.index >= pd.Timestamp(start)] if ex is not None else None)
 
 
 def outlook(eq: pd.Series, n: int = 4000, seed: int = 0) -> dict:
@@ -339,10 +363,18 @@ def run(cfg: dict, ds: pd.DataFrame, preds: pd.DataFrame | None = None) -> dict:
         start=str(cal[0].date()), end=str(cal[-1].date()), cost=cfg["research"]["cost"],
         account=dict(capital=pc["capital_jpy"], max_positions=pc["max_positions"], picks_per_day=pc["picks_per_day"],
                      risk_per_trade=pc.get("risk_per_trade"), lot_size=pc["lot_size"], skipped=ai["skipped"]),
-        stats=dict(ai=_stats(eq, ai["trades"]), random=_stats(rnd_eq), index=_stats(index)),
+        stats=dict(ai=_stats(eq, ai["trades"], ai["exposure"]), random=_stats(rnd_eq), index=_stats(index)),
         years=years, curve=dict(ai=weekly(eq), random=weekly(rnd_eq), index=weekly(index)),
         crisis_periods=[dict(name=e.name, start=e.start, end=e.end) for e in regimes.EVENTS if e.kind == "crisis"],
     )
+    # 比べる基準の期間: 2018-10 に売買単位が100株に統一されるまでは1,000株単位の銘柄が多く、それ以前の検証は実際より良く見える（ジャーナル 77）
+    res["since"] = dict(start=BASE_START, ai=period_stats(ai, BASE_START),
+                        index=_stats(index[index.index >= pd.Timestamp(BASE_START)]))
+    # 取引コストの見積もりを変えた場合（往復 0.1% 違うと年率が約4ポイント動く。実際の約定とのずれは fills.py で測る）
+    res["costs"] = []
+    for c in COST_SCENARIOS:
+        r = ai if abs(c - cfg["research"]["cost"]) < 1e-12 else simulate(preds, cal, cfg, "ai", cost=c)
+        res["costs"].append(dict(cost=c, all=_stats(r["equity"], r["trades"]), since=period_stats(r, BASE_START)))
     res["gate"] = cfg["paper_trading"].get("gate")
     res["outlook"] = outlook(eq)
     try:  # 参考: 資金の一部（設定が無ければ30%）を指数に固定し、残りをAIで運用した場合

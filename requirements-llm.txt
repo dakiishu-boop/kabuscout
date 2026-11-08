@@ -1,0 +1,3 @@
+# Mac だけで動かす Claude の読み取り（tdnet_reasons.py・tdnet_quals.py）に使う。クラウドには入れない
+anthropic>=0.125
+cryptography>=3.1  # 暗号化された（印刷・編集の制限だけの）決算短信 PDF を pypdf で開くため

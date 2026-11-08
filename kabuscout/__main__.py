@@ -34,7 +34,7 @@ from .db import connect
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="kabuscout")
-    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push", "shadow-due", "shadow-train"])
+    ap.add_argument("command", choices=["daily", "train", "notify-test", "status", "site", "research", "backtest", "edinet", "jquants", "evaluate-jquants", "survivorship", "tdnet", "evaluate-edinet", "prices", "evaluate-forecast", "tdnet-xbrl", "tdnet-reasons", "research-ai", "flows", "backup", "restore", "backup-drill", "remind-push", "shadow-due", "shadow-train"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--retrain", action="store_true")
     ap.add_argument("--no-notify", action="store_true")
@@ -101,6 +101,9 @@ def main(argv=None):
     elif a.command == "tdnet-xbrl":  # 決算短信の数値（直近30日分の未取得）
         from . import tdnet_xbrl
         print(tdnet_xbrl.update(cfg, days=30, max_minutes=a.budget_min or 40))
+    elif a.command == "tdnet-reasons":  # 業績予想の修正の理由を Claude で分類（直近30日分の未処理。Mac で .env の ANTHROPIC_API_KEY を使う）
+        from . import tdnet_reasons
+        print(tdnet_reasons.update(cfg, days=30, max_minutes=a.budget_min or 90))
     elif a.command == "evaluate-forecast":  # 自前の利益の予想（益回り）が効くかの確認
         from . import evaluate
         from .forecast import FC_FEATURES

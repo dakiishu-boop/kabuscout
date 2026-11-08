@@ -21,6 +21,7 @@ from .tdnet import API, UA
 log = logging.getLogger(__name__)
 TITLE = re.compile(r"決算短信|業績予想|業績修正")
 FACT = re.compile(r"<ix:nonFraction\b([^>]*?)(?:/>|>(.*?)</ix:nonFraction>)", re.S)
+REVISION_FILE = re.compile(r"(^|/)tse-rv(fc|df)-")  # 業績予想・配当予想の修正は Summary/ ではなく、zip 直下の tse-rvfc-…/tse-rvdf-… に入っている
 ATTR = lambda a, k: (re.search(rf'{k}="([^"]*)"', a) or [None, None])[1]
 
 
@@ -35,7 +36,7 @@ def parse(content: bytes) -> pd.DataFrame:
     z = zipfile.ZipFile(io.BytesIO(content))
     rows = []
     for n in z.namelist():
-        if "/Summary/" not in n or not n.endswith("ixbrl.htm"):
+        if not n.endswith("ixbrl.htm") or ("/Summary/" not in n and not REVISION_FILE.search(n)):
             continue
         s = z.read(n).decode("utf-8", errors="ignore")
         for m in FACT.finditer(s):
@@ -61,6 +62,12 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 20) -> dict:
     d = _dir(cfg)
     done_p = d / "done.parquet"
     done = set(pd.read_parquet(done_p)["id"]) if done_p.exists() else set()
+    redo = d / "redo_revisions_v1"  # 以前は修正のお知らせの数値を読めず「取得済み」にしていた → 数値が1つも無い書類を一度だけ取り直す
+    if not redo.exists():
+        have = load(cfg)
+        done &= set(have["id"]) if have is not None else set()
+        pd.DataFrame({"id": sorted(done)}).to_parquet(done_p)
+        redo.touch()
     t0, rows, new_ids, fails = time.time(), [], [], 0
     today = pd.Timestamp.today().normalize()
     for k in range(days):

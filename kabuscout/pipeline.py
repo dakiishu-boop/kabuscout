@@ -149,6 +149,13 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     if danger and today["code"].isin(danger).any():
         log.info("上場廃止のおそれがある銘柄を候補から除外: %s", ", ".join(f"{c}（{danger[c]}）" for c in today["code"] if c in danger))
         today = today[~today["code"].isin(danger)]
+    try:  # 買収の発表があって株価が買付価格に張り付いている銘柄も買わない（過去ペーパートレードに出てこない本番だけの穴、§75）
+        buyout = tdnet.pending_buyouts(tdnet.load(cfg), pd.Timestamp.today().normalize())
+        if buyout and today["code"].isin(buyout).any():
+            log.info("買収の発表がある銘柄を候補から除外: %s", ", ".join(f"{c}（{buyout[c]}）" for c in today["code"] if c in buyout))
+            today = today[~today["code"].isin(buyout)]
+    except Exception as e:
+        log.warning("買収の発表の確認に失敗（除外せずに続行）: %s", e)
     scored = learner.score(today, bundle, weights)
     try:  # その日の全候補の予測を残す（追記だけ）。影の候補も同じ候補に点を付けて並べる（本番の判断には使わない）
         from . import forward, shadow

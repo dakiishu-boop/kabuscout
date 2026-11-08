@@ -35,12 +35,34 @@ EVENT_RULES = [
     ("offering", r"公募|新株式発行|第三者割当|新株予約権.*発行"),
 ]
 EXCLUDE = re.compile(r"訂正|取得状況|取得終了|結果|中止|延期|お詫び")
+# 自社の株が買収される（TOB・MBO・締め出し）発表。株価が買付価格に張り付くので、成立して上場廃止になるまで買っても値幅が無い。
+# 過去の株価データには成立して上場廃止になった銘柄が無い（生存者バイアス）ので、過去ペーパートレードには出てこない＝本番だけの穴（§75）。
+# Claude で分類した 2010〜2026年の題名1.6万件と比べて、案件単位で 2024年以降の 84% を拾い、当たりの 85% が本物
+TOB_TARGET = re.compile(r"(当社|当社の)(普通)?(株式|株券)(等)?(に対する|の)公開買付|ＭＢＯ|MBO|マネジメント・バイアウト|株式等売渡請求|"
+                        r"単元株式数の定めの廃止|当社株式の上場廃止")
+TOB_NOT = re.compile(r"訂正|不成立|撤回|中止|自己株式|公開買付けへの応募|子会社(?!化)|名古屋|札幌|福岡|プロマーケット|PRO Market|上場廃止申請|反対")
+TOB_END = re.compile(r"(当社|当社の)(普通)?(株式|株券).{0,30}公開買付.{0,40}(不成立|撤回|中止)")
 
 
 def classify(title: str) -> list[str]:
-    if EXCLUDE.search(title or ""):
-        return []
-    return [k for k, pat in EVENT_RULES if re.search(pat, title)]
+    t = title or ""
+    if TOB_END.search(t) and "訂正" not in t and "自己株式" not in t:
+        return ["tob_end"]
+    out = ["tob_target"] if TOB_TARGET.search(t) and not TOB_NOT.search(t) else []
+    if EXCLUDE.search(t):
+        return out
+    return out + [k for k, pat in EVENT_RULES if re.search(pat, t)]
+
+
+def pending_buyouts(td: pd.DataFrame | None, today: pd.Timestamp, days: int = 365) -> dict[str, str]:
+    """買収（TOB・MBO・締め出し）の発表から days 日以内で、不成立・撤回の発表が無い銘柄 → {コード: 説明}。"""
+    if td is None or td.empty:
+        return {}
+    since = today - pd.Timedelta(days=days)
+    ev = td[(td["pubdate"] >= since) & (td["pubdate"] <= today + pd.Timedelta(days=1))]
+    start = ev[ev["events"].str.contains("tob_target")].groupby("code")["pubdate"].max()
+    end = ev[ev["events"].str.contains("tob_end")].groupby("code")["pubdate"].max()
+    return {c: f"買収の発表あり（{d:%Y/%m/%d}）" for c, d in start.items() if not (c in end and end[c] > d)}
 
 
 def _path(cfg):
@@ -60,6 +82,11 @@ def update(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = Non
     raw = json.loads(meta_p.read_text()) if meta_p.exists() else []
     done = set(raw.values() if isinstance(raw, dict) else raw)
     today = pd.Timestamp.today().normalize()
+    rescan = p.with_name("tdnet_rescan_tob_v1")  # 買収の発表（tob_target/tob_end）を足したので、直近400日だけ一度取り直す
+    if not rescan.exists() and done:
+        done -= {d.strftime("%Y%m%d") for d in pd.date_range(today - pd.Timedelta(days=400), today)}
+        meta_p.write_text(json.dumps(sorted(done)))
+        rescan.touch()
     days = [d for d in pd.date_range(start, today) if d.strftime("%Y%m%d") not in done or d >= today - pd.Timedelta(days=3)]
     t0, rows = time.time(), []
     for i, d in enumerate(days):

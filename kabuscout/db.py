@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS paper_swap_positions(
   horizon INTEGER, tp_atr REAL, sl_atr REAL, capital REAL, score REAL, sell_date TEXT
 );
 CREATE TABLE IF NOT EXISTS paper_swap_equity(date TEXT PRIMARY KEY, equity REAL, capital REAL);
+-- 比較用のペーパートレード口座その2（3つのモデルの合意が高い候補を多めに買う。本番の判断には使わない・ジャーナル 82・83）。
+-- 列は paper_swap_positions と同じ ＋ 注文した時の倍率（size。空なら1倍）
+CREATE TABLE IF NOT EXISTS paper_conf_positions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, signal_date TEXT, status TEXT,
+  entry_date TEXT, entry REAL, shares INTEGER, tp REAL, sl REAL, atr REAL,
+  exit_date TEXT, exit REAL, pnl REAL, reason TEXT, prob REAL, days_held INTEGER DEFAULT 0,
+  horizon INTEGER, tp_atr REAL, sl_atr REAL, capital REAL, score REAL, sell_date TEXT, size REAL
+);
+CREATE TABLE IF NOT EXISTS paper_conf_equity(date TEXT PRIMARY KEY, equity REAL, capital REAL);
 -- その日の通知内容（Webページの「過去の結果」表示用）
 CREATE TABLE IF NOT EXISTS summaries(data_date TEXT PRIMARY KEY, json TEXT);
 CREATE TABLE IF NOT EXISTS runs(

@@ -23,6 +23,24 @@ def order_shares(acc: dict, equity: float, cash: float, price: float, stop_dist:
     return int(n // lot) * lot
 
 
+def size_mult(tiers, agreement) -> float:
+    """自信（3つのモデルの合意）で買う量を変える倍率（比較用の口座 paper_conf と過去の検証で共通。ジャーナル 82・83）。
+    tiers = [[合意の下限, 倍率], ...]。当てはまる段のうち下限が一番高いものの倍率。段が無い・合意が分からない・どれにも届かないときは 1。"""
+    try:
+        a = float(agreement)
+    except (TypeError, ValueError):
+        return 1.0
+    if not tiers or a != a:
+        return 1.0
+    hit = [(float(lo), float(m)) for lo, m in tiers if a >= float(lo)]
+    return max(hit)[1] if hit else 1.0
+
+
+def sized(acc: dict, mult: float) -> dict:
+    """倍率を「損切時の損失の上限」に掛けた口座の設定。1銘柄の上限額（slot）にも同じ倍率を掛けて order_shares に渡す。"""
+    return acc if mult == 1.0 else {**acc, "risk_per_trade": (acc.get("risk_per_trade") or 0) * mult}
+
+
 TICK = "tse"  # 呼値の表。米国株の研究（kabuscout/us.py）では "us"（1セント）
 
 

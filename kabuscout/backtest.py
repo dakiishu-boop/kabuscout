@@ -22,7 +22,7 @@ import pandas as pd
 
 from . import learner, regimes
 from .data import PriceStore
-from .risk import order_shares
+from .risk import order_shares, size_mult, sized
 
 log = logging.getLogger(__name__)
 
@@ -224,9 +224,9 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
                 continue
             if cap_sec and secs.count(r["sector"]) >= cap_sec:  # 同じ業種に偏らないように
                 continue
-            sz = float(r["_size"]) if "_size" in r and np.isfinite(r["_size"]) else 1.0  # 研究用: 自信の度合いで買う量を変える
-            a_ = acc if sz == 1.0 else {**acc, "risk_per_trade": (acc.get("risk_per_trade") or 0) * sz}
-            n = order_shares(a_, eq, avail, float(r["close"]) * (1 + half_cost), float(r["_stop"]), eq / maxp * sz)
+            # 自信の度合いで買う量を変える: 研究用の _size 列か、口座の設定 size_by_agreement（比較用の口座 paper_conf と同じ計算）
+            sz = float(r["_size"]) if "_size" in r and np.isfinite(r["_size"]) else size_mult(acc.get("size_by_agreement"), r.get("agreement"))
+            n = order_shares(sized(acc, sz), eq, avail, float(r["close"]) * (1 + half_cost), float(r["_stop"]), eq / maxp * sz)
             if n <= 0:  # 単元（100株）で買えない値段・損失の上限で1単元も買えない
                 skipped += 1
                 continue

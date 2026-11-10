@@ -29,6 +29,11 @@ def _registry() -> dict:
     return yaml.safe_load(SHADOW_FILE.read_text()) if SHADOW_FILE.exists() else {}
 
 
+def account(key: str) -> dict:
+    """shadow.yaml の accounts に事前登録した、比較用のペーパートレード口座の設定（無ければ空）。"""
+    return next((a for a in _registry().get("accounts") or [] if a.get("key") == key), {})
+
+
 def _saved(cfg: dict) -> dict:
     from .pipeline import params_path
     p = params_path(cfg)

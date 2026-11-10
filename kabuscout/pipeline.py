@@ -197,6 +197,18 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
             pt["swap"] = sw
         except Exception as e:
             log.warning("比較用の口座の更新に失敗（本番は続行）: %s", e)
+        try:  # 比較用の口座その2（合意が高い候補を多めに買う）。倍率は shadow.yaml に事前登録したものだけを使う（本番の判断には使わない。ジャーナル 82・83）
+            from . import shadow
+            tiers = shadow.account("paper_conf").get("size_by_agreement")
+            if tiers:
+                first = paper.start_from(con, "paper", "paper_conf")
+                cf = paper.step(con, cfg, ind, top, last, crisis=crisis, acct="paper_conf", sizing=tiers)
+                cf["events"] = first + cf["events"]
+                cf["sized"] = con.execute("SELECT COUNT(*) FROM paper_conf_positions WHERE size IS NOT NULL AND size!=1 "
+                                          "AND status IN ('pending','open','closed')").fetchone()[0]
+                pt["conf"] = cf
+        except Exception as e:
+            log.warning("比較用の口座（自信で買う量を変える）の更新に失敗（本番は続行）: %s", e)
     rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
     try:  # 取得に失敗しても実行は成功扱いになるデータ（適時開示など）の遅れを、通知の先頭で知らせる
         from . import freshness

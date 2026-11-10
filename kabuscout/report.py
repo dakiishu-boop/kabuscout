@@ -108,6 +108,23 @@ def _swap_text(pt: dict) -> str:
             f"入れ替え {s.get('swaps', 0)}回・最高値から {s.get('drawdown', 0):+.1%}）")
 
 
+def _conf_text(pt: dict) -> str:
+    """比較用の口座その2（3つのモデルの合意が高い候補を多めに買う、ジャーナル 82・83）の一行。"""
+    s = pt["conf"]
+    return (f"自信で買う量を変える口座: 評価額 {s['equity']:,.0f}円（本番との差 {s['equity'] - pt['equity']:+,.0f}円・"
+            f"多めに買った注文 {s.get('sized', 0)}回・最高値から {s.get('drawdown', 0):+.1%}）")
+
+
+def _side_lines(pt: dict) -> list[str]:
+    """比較用の口座（本番の判断には使わない）の行。口座ごとに、まとめの1行とその日の出来事。"""
+    L = []
+    for key, text in (("swap", _swap_text), ("conf", _conf_text)):
+        if pt.get(key):
+            L.append(text(pt))
+            L += [f"• {e}" for e in pt[key]["events"]]
+    return L
+
+
 # ---------------------------------------------------------------- Markdown（ログ・レポートファイル用）
 def to_markdown(rep: dict) -> str:
     m = rep["market"]
@@ -142,9 +159,7 @@ def to_markdown(rep: dict) -> str:
             c = pt["core"]
             L.append(f"  指数（{c['name']}）: {c['value']:,.0f}円（{c['ret']:+.1%}） → 合計 {pt['equity'] + c['value']:,.0f}円")
         L += [f"  ・{e}" for e in pt["events"]]
-        if pt.get("swap"):
-            L.append(f"  {_swap_text(pt)}")
-            L += [f"    ・{e}" for e in pt["swap"]["events"]]
+        L += [("    ・" + x[2:]) if x.startswith("• ") else f"  {x}" for x in _side_lines(pt)]
     if rep.get("forward"):
         from .forward import text as fw_text
         L.append(f"全候補の答え合わせ: {fw_text(rep['forward'])}")
@@ -201,7 +216,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
                 dict(name="最高値からの下落", value=f"{pt.get('drawdown', 0):+.1%}", inline=True),
             ] + ([dict(name="健康診断（過去の想定との比較）", value=_health_text(pt["health"]), inline=False)] if pt.get("health") else [])
               + ([dict(name=f"指数の部分（{pt['core']['name']}）", value=f"{pt['core']['value']:,.0f}円（{pt['core']['ret']:+.1%}）／合計 {pt['equity'] + pt['core']['value']:,.0f}円", inline=False)] if pt.get("core") else [])
-              + ([dict(name="比較用の口座（本番の判断には使わない）", value=(_swap_text(pt) + "".join(f"\n• {e}" for e in pt["swap"]["events"]))[:1024], inline=False)] if pt.get("swap") else [])))
+              + ([dict(name="比較用の口座（本番の判断には使わない）", value="\n".join(_side_lines(pt))[:1024], inline=False)] if _side_lines(pt) else [])))
     lines = []
     if rep["model"]:
         mo = rep["model"]

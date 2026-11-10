@@ -12,7 +12,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .risk import order_shares, stop_review_threshold, tick_size
+from .risk import order_shares, size_mult, sized, stop_review_threshold, tick_size
 
 log = logging.getLogger(__name__)
 
@@ -69,9 +69,11 @@ def _simulate(ind: dict, code: str, entry_date: pd.Timestamp, tp: float, sl: flo
 
 
 def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp, crisis: bool = False,
-         acct: str = "paper", swap: bool = False) -> dict:
-    """acct: 記録する表（paper = 本番。paper_swap = 比較用の口座）。
-    swap: 決算好反応の上位候補が5枠の満杯で見送りになる日は、点が一番低い保有と入れ替える（比較用の口座だけ。ジャーナル 64）。"""
+         acct: str = "paper", swap: bool = False, sizing: list | None = None) -> dict:
+    """acct: 記録する表（paper = 本番。paper_swap・paper_conf = 比較用の口座）。
+    swap: 決算好反応の上位候補が5枠の満杯で見送りになる日は、点が一番低い保有と入れ替える（比較用の口座だけ。ジャーナル 64）。
+    sizing: [[合意の下限, 倍率], ...]。3つのモデルの合意が高い候補は、1銘柄の上限額と損失の上限をその倍率にして買う
+    （比較用の口座だけ。倍率は注文した時に決めて記録し、翌朝の約定でも同じ倍率を使う。ジャーナル 82・83）。"""
     P, E = f"{acct}_positions", f"{acct}_equity"
     pc = cfg["paper_trading"]
     H = cfg["labeling"]["horizon_days"]
@@ -101,7 +103,8 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
         atr = p["atr"] / (_rebase(then[0], float(ind["close"][p["code"]].iat[j - 1])) if then and then[0] else 1.0)  # 注文の翌朝が権利落ち日のとき
         kt = p["tp_atr"] if pd.notna(p.get("tp_atr")) else k_tp
         ks = p["sl_atr"] if pd.notna(p.get("sl_atr")) else k_sl
-        shares = order_shares(pc, equity, cash, entry * (1 + half_cost), ks * atr, slot) if np.isfinite(entry) else 0
+        m = float(p["size"]) if "size" in p and pd.notna(p["size"]) else 1.0  # 注文した時の倍率（比較用の口座 paper_conf だけ）
+        shares = order_shares(sized(pc, m), equity, cash, entry * (1 + half_cost), ks * atr, slot * m) if np.isfinite(entry) else 0
         if shares == 0:
             con.execute(f"UPDATE {P} SET status='cancelled', reason='資金不足' WHERE id=?", (p["id"],))
             continue
@@ -158,13 +161,14 @@ def step(con, cfg: dict, ind: dict, picks: pd.DataFrame, data_date: pd.Timestamp
                 break
             px = float(r["close"]) * (1 + half_cost)
             ks = float(r["sl_atr"]) if pd.notna(r.get("sl_atr")) else k_sl
-            n = order_shares(pc, st["equity"], avail, px, ks * float(r["atr"]), st["equity"] / pc["max_positions"])
+            m = size_mult(sizing, r.get("agreement"))
+            n = order_shares(sized(pc, m), st["equity"], avail, px, ks * float(r["atr"]), st["equity"] / pc["max_positions"] * m)
             if n <= 0:
                 continue
             avail -= n * px
             n_new -= 1
-            _order(con, cfg, P, r, data_date, score=swap)
-            events.append(f"注文 {r['code']} {r['name']} (翌寄付)")
+            _order(con, cfg, P, r, data_date, score=swap or bool(sizing), size=m if sizing else None)
+            events.append(f"注文 {r['code']} {r['name']} (翌寄付{'' if m == 1.0 else f'・{m:g}倍'})")
     elif swap and free <= 0 and len(picks) and not already and not crisis:
         events += _swap(con, cfg, ind, picks, held, data_date, acct)
     con.commit()
@@ -199,8 +203,9 @@ def _candidates(con, pc: dict, ind: dict, picks: pd.DataFrame, held: list[str], 
     return cand
 
 
-def _order(con, cfg: dict, P: str, r, data_date: pd.Timestamp, score: bool = False) -> None:
-    """翌営業日の寄付で買う注文を記録する。score: 比較用の口座では、入れ替えに使う「注文した時の点（final_score）」も残す。"""
+def _order(con, cfg: dict, P: str, r, data_date: pd.Timestamp, score: bool = False, size: float | None = None) -> None:
+    """翌営業日の寄付で買う注文を記録する。score: 比較用の口座では、入れ替えに使う「注文した時の点（final_score）」も残す。
+    size: 自信で買う量を変える口座では、注文した時の倍率も残す。"""
     lab = cfg["labeling"]
     from .core import ai_capital
     cols = "code,name,signal_date,status,atr,prob,tp_atr,sl_atr,horizon,capital" + (",score" if score else "")
@@ -209,6 +214,9 @@ def _order(con, cfg: dict, P: str, r, data_date: pd.Timestamp, score: bool = Fal
             float(r.get("sl_atr", lab["sl_atr"])), int(r.get("horizon", lab["horizon_days"])), ai_capital(cfg)]
     if score:
         vals.append(None if pd.isna(r.get("final_score")) else float(r["final_score"]))
+    if size is not None:
+        cols += ",size"
+        vals.append(float(size))
     con.execute(f"INSERT INTO {P}({cols}) VALUES ({','.join('?' * len(vals))})", vals)
 
 

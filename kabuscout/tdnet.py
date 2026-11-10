@@ -87,6 +87,10 @@ def update(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = Non
         done -= {d.strftime("%Y%m%d") for d in pd.date_range(today - pd.Timedelta(days=400), today)}
         meta_p.write_text(json.dumps(sorted(done)))
         rescan.touch()
+    n = _reclassify(old, today - pd.Timedelta(days=400))
+    if n:
+        old.to_parquet(p)
+        log.info("  適時開示: 手元の題名 %d件を今のルールで分類し直した", n)
     days = [d for d in pd.date_range(start, today) if d.strftime("%Y%m%d") not in done or d >= today - pd.Timedelta(days=3)]
     t0, rows = time.time(), []
     for i, d in enumerate(days):
@@ -117,9 +121,21 @@ def update(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = Non
     return _save(p, meta_p, old, rows, done)
 
 
+def _reclassify(old: pd.DataFrame, since: pd.Timestamp) -> int:
+    """手元にある since 以降の題名を、今のルールで分類し直す（通信なし）。直した件数を返す。
+    取り直しでは、すでに別の分類（例: offering）で保存してあった題名に tob_target が付かなかった（ジャーナル 79）。"""
+    m = old["pubdate"] >= since
+    if not m.any():
+        return 0
+    now = old.loc[m, "title"].map(lambda t: ",".join(classify(t)))
+    ch = now[now.ne(old.loc[m, "events"]) & now.ne("")]
+    old.loc[ch.index, "events"] = ch
+    return len(ch)
+
+
 def _save(p, meta_p, old, rows, done):
-    if rows:
-        old = pd.concat([old, pd.DataFrame(rows)], ignore_index=True).drop_duplicates(["pubdate", "code", "title"])
+    if rows:  # 同じ題名を取り直したときは、新しい分類のほうを残す
+        old = pd.concat([old, pd.DataFrame(rows)], ignore_index=True).drop_duplicates(["pubdate", "code", "title"], keep="last")
         old.to_parquet(p)
     meta_p.write_text(json.dumps(sorted(done)))
     return old

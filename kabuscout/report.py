@@ -302,8 +302,10 @@ def _baseline_fields(bt: dict) -> list[dict]:
     S = bt.get("since")
     if S:
         a = S["ai"]
-        out.append(dict(name=f"{S['start'][:4]}年以降（比べる基準）", value=f"年率 **{a['cagr']:+.1%}**・最大下落 {a['max_dd']:.0%}\n"
-                        f"日経平均 {S['index']['cagr']:+.1%}・Sharpe {a.get('sharpe') or 0:.2f}", inline=False))
+        i = S["index"]  # Sharpe は AI と日経平均のどちらの数字かが分かるように、それぞれの行に書く
+        out.append(dict(name=f"{S['start'][:4]}年以降（比べる基準）",
+                        value=f"AI 年率 **{a['cagr']:+.1%}**・最大下落 {a['max_dd']:.0%}・Sharpe {a.get('sharpe') or 0:.2f}\n"
+                              f"日経平均（配当なし） 年率 {i['cagr']:+.1%}・最大下落 {i['max_dd']:.0%}・Sharpe {i.get('sharpe') or 0:.2f}", inline=False))
     C = bt.get("costs")
     if C:
         out.append(dict(name="往復コストを変えた場合（年率・全期間 ／ 基準の期間）",

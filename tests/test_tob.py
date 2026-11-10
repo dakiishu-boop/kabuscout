@@ -23,3 +23,17 @@ def test_pending_buyouts_window_and_end():
     p = tdnet.pending_buyouts(td, pd.Timestamp("2026-11-06"))
     assert set(p) == {"3676"}  # 4320 は不成立で終わり、9999 は1年より前
     assert tdnet.pending_buyouts(None, pd.Timestamp("2026-11-06")) == {}
+
+
+def test_stored_titles_get_tob_target_after_rule_change(tmp_path):
+    """別の分類で保存済みだった題名にも、買収の印が付く（取り直しでも、手元の分類し直しでも）。"""
+    title = "株式会社Ａによる当社株式に対する公開買付けに関する意見表明及び第三者割当による新株式発行のお知らせ"
+    assert tdnet.classify(title) == ["tob_target", "offering"]
+    ts = pd.Timestamp("2026-03-24 11:30")
+    old = pd.DataFrame({"pubdate": [ts, pd.Timestamp("2024-01-10 15:00")], "code": ["5202", "7088"], "title": [title, title],
+                        "events": ["offering", "offering"]})
+    assert tdnet._reclassify(old, pd.Timestamp("2025-10-01")) == 1  # 期間より前の行は触らない
+    assert list(old["events"]) == ["tob_target,offering", "offering"]
+    old["events"] = "offering"
+    new = tdnet._save(tmp_path / "t.parquet", tmp_path / "t.json", old, [dict(pubdate=ts, code="5202", title=title, events="tob_target,offering")], set())
+    assert len(new) == 2 and set(new[new["code"] == "5202"]["events"]) == {"tob_target,offering"}

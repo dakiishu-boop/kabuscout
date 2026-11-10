@@ -27,8 +27,8 @@ def test_sized_scales_only_the_loss_cap():
 
 
 def test_registered_tiers_are_the_ones_tested():
-    # 事前登録した倍率（合意 0.95 以上だけ 1.5倍。ジャーナル 83）を、結果を見てから変えないための見張り
-    assert shadow.account("paper_conf")["size_by_agreement"] == [[0.95, 1.5]]
+    # 事前登録した倍率（合意 0.95 以上だけ 2倍。ジャーナル 83）を、結果を見てから変えないための見張り
+    assert shadow.account("paper_conf")["size_by_agreement"] == [[0.95, 2.0]]
     assert shadow.account("no_such_account") == {}
 
 
@@ -94,3 +94,11 @@ def test_backtest_setting_equals_research_size_column(cfg):
     assert sorted(tier["trades"]["pnl"].round().tolist()) != sorted(base["trades"]["pnl"].round().tolist())
     # A: 400株（1.5倍）× 500円 × +10% ≒ +2万円、今の設定なら 200株で ≒ +1万円
     assert tier["trades"]["pnl"].max() / base["trades"]["pnl"].max() > 1.9
+
+
+def test_registered_rule_doubles_only_the_top_tier(cfg):
+    # 登録した買い方（合意 0.95 以上だけ 2倍）: 損失の上限 4万円 ÷ 75円 = 533株 → 500株（上限額 40万円の内）。0.92 は1倍のまま
+    tiers = shadow.account("paper_conf")["size_by_agreement"]
+    ev, pos = run(cfg, "paper_conf", tiers, [pick("7777", 0.97), pick("8888", 0.92)])
+    assert ev == ["注文 7777 テスト (翌寄付・2倍)", "注文 8888 テスト (翌寄付)"]
+    assert pos["size"].tolist() == [2.0, 1.0] and pos["shares"].tolist() == [500, 200]

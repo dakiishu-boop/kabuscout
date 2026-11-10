@@ -24,7 +24,7 @@ import pandas as pd
 import requests
 
 from .tdnet import API, UA
-from .tdnet_reasons import DRIVERS, _client
+from .tdnet_reasons import DRIVERS, _client, api_stop_reason, check_api, notify_stop
 
 log = logging.getLogger(__name__)
 TITLE = re.compile(r"決算短信")
@@ -116,6 +116,10 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 120, limit: int | Non
     done = set(pd.read_parquet(done_p)["id"]) if done_p.exists() else set()
     model = os.environ.get("KABUSCOUT_QUAL_MODEL", DEFAULT_MODEL)
     client = _client()
+    stop = check_api(client)
+    if stop:
+        log.error("決算短信の定性情報を中止: %s", stop)
+        return dict(targets=0, failed=0, total_docs=len(done), minutes=0.0, model=model, stopped=stop)
     today = pd.Timestamp.today().normalize()
     targets = []
     for k in range(days):
@@ -146,17 +150,21 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 120, limit: int | Non
                     title=t["title"], model=model, **use, **res)
 
     def collect(f, t):
-        nonlocal fails
+        nonlocal fails, stop
         try:
             rows.append(f.result())
             new_ids.append(str(t["id"]))
         except Exception as e:
             log.warning("決算短信 %s: %s", t.get("id"), e)
             fails += 1
+            stop = stop or api_stop_reason(e)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for t in targets:
             if time.time() - t0 > max_minutes * 60:
+                break
+            if stop:  # キーが無効・残高切れなら、残りの PDF は取りに行かない
+                log.error("決算短信の定性情報を中止: %s", stop)
                 break
             try:
                 resp = requests.get(t["document_url"].split("rd.php?")[-1], headers=UA, timeout=60)
@@ -178,7 +186,8 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 120, limit: int | Non
             collect(f, t)
     flush()
     total = len(set(pd.read_parquet(done_p)["id"])) if done_p.exists() else 0
-    info = dict(targets=len(targets), failed=fails, total_docs=total, minutes=round((time.time() - t0) / 60, 1), model=model)
+    info = dict(targets=len(targets), failed=fails, total_docs=total, minutes=round((time.time() - t0) / 60, 1), model=model,
+                **({"stopped": stop} if stop else {}))
     log.info("決算短信の定性情報: 対象 %d件（失敗 %d件）／累計 %d件", len(targets), fails, total)
     return info
 
@@ -188,4 +197,6 @@ if __name__ == "__main__":  # python -m kabuscout.tdnet_quals [分]
     from .config import load_config
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    print(pd.Timestamp.now(), update(load_config(), days=30, max_minutes=float(sys.argv[1]) if len(sys.argv) > 1 else 120))
+    info = update(load_config(), days=30, max_minutes=float(sys.argv[1]) if len(sys.argv) > 1 else 120)
+    print(pd.Timestamp.now(), info)
+    notify_stop("決算短信の読み取り", info)

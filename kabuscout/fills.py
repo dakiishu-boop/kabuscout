@@ -8,7 +8,7 @@
     open  = 寄付の成行（想定はその日の始値）／ close = 引けの成行（想定はその日の終値）
     limit = 指値（想定は指値。利確など）／ stop = 逆指値（想定は逆指値の値段。損切など）
   open・close はこの仕組みの株価（Yahoo）から、limit・stop は記録するときに入れた値段（--ref）を使う
-- ずれは「不利な方向をプラス」で、% とティック数の両方で出す
+- ずれは「不利な方向をプラス」で、% とティック数の両方で出す（ティックは標準の呼値の表。大型株は実際の呼値がもっと細かいので、% の方を見る）
 
 使い方:
   python -m kabuscout fill --side buy --code 7203 --shares 100 --price 2510 --kind open --date 2026-11-10
@@ -95,8 +95,8 @@ def summary(d: pd.DataFrame, assumed_cost: float) -> dict:
     ok = d.dropna(subset=["slip"])
     out = dict(n=int(len(d)), measured=int(len(ok)), by_kind={})
     for (side, kind), g in ok.groupby(["side", "kind"]):
-        out["by_kind"][f"{side}/{kind}"] = dict(n=int(len(g)), slip=float(g["slip"].mean()), ticks=float(g["ticks"].mean()),
-                                               worst_ticks=float(g["ticks"].max()))
+        out["by_kind"][f"{side}/{kind}"] = dict(n=int(len(g)), slip=float(g["slip"].mean()) + 0.0, ticks=float(g["ticks"].mean()) + 0.0,
+                                               worst_ticks=float(g["ticks"].max()) + 0.0)  # + 0.0 は「-0」と表示されないように
     b, s = ok[ok["side"] == "buy"], ok[ok["side"] == "sell"]
     if len(b) and len(s):
         # 損切は検証で1ティック不利を別に入れているので、その分を除いた残りを往復コストと比べる
@@ -124,6 +124,12 @@ def report(cfg: dict) -> str:
     lines = [f"約定の記録 {s['n']}件（想定の値段と比べられたもの {s['measured']}件）。ずれは不利な方向がプラス"]
     for k, v in s["by_kind"].items():
         lines.append(f"  {k:12s} {v['n']:3d}件  平均 {v['slip']:+.3%}（{v['ticks']:+.1f}ティック、最悪 {v['worst_ticks']:+.0f}）")
+    miss = d[d["slip"].isna() & d["kind"].isin(["open", "close"])]
+    if len(miss):  # 寄付・引けの約定は手元の株価と比べるので、株価がその日まで無いと比べられない
+        last = raw["close"].index.max() if len(raw["close"]) else None
+        lines.append(f"  ※ {len(miss)}件は手元の株価に約定の日が無く、比べられません（手元の株価は "
+                     f"{last:%Y/%m/%d} まで）。python -m kabuscout prices で株価を更新してから、もう一度実行してください" if last is not None else
+                     f"  ※ {len(miss)}件は手元に株価が無く、比べられません。python -m kabuscout prices で株価を取得してください")
     if "round_trip" in s:
         lines.append(f"往復コストの実測の目安 {s['round_trip']:+.3%}（検証の仮定 {s['assumed']:.2%}・損切は別に1ティック）")
         lines.append("  → 仮定より大きければ、過去の検証のコスト別の成績（Webページの「比べる基準の期間とコストの見積もり」）の近い行を目安にする")

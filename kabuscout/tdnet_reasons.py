@@ -91,6 +91,40 @@ def _client():
     return anthropic.Anthropic(max_retries=4, timeout=180)
 
 
+def api_stop_reason(e: Exception) -> str | None:
+    """続けても全部失敗する API の誤り（キーが無効・権限なし・残高切れ）なら、その説明を返す。
+    2026-11-09 の夜はキーが無効のまま 358件の PDF を取りに行って全部失敗した（約3時間・ジャーナル 79）ので、こういうときはすぐ止める。"""
+    import anthropic
+    if isinstance(e, anthropic.AuthenticationError):
+        return "APIキーが無効です（Claude Console でキーを確認し、.env の ANTHROPIC_API_KEY を入れ直してください）"
+    if isinstance(e, anthropic.PermissionDeniedError):
+        return "APIキーに権限がありません（Claude Console でキーを確認してください）"
+    if isinstance(e, anthropic.BadRequestError) and "credit balance" in str(e):
+        return "API のクレジット残高が足りません（Claude Console で残高を確認してください）"
+    return None
+
+
+def check_api(client) -> str | None:
+    """適時開示のサイトに取りに行く前に、キーが通るかを無料の呼び出しで確かめる（残高切れはここでは分からないので、実行中にも見る）。"""
+    try:
+        client.models.list(limit=1)
+    except Exception as e:
+        return api_stop_reason(e)
+    return None
+
+
+def notify_stop(job: str, info: dict) -> None:
+    """夜の自動実行が止まったことを Mac の通知で知らせる（ログは普段見ないため。出せなくても続ける）。"""
+    import subprocess
+    import sys
+    if info.get("stopped") and sys.platform == "darwin":
+        try:
+            subprocess.run(["osascript", "-e", 'display notification "%s" with title "KabuScout: %sを中止"' % (info["stopped"].replace('"', "'"), job)],
+                           timeout=10, capture_output=True)
+        except Exception:
+            pass
+
+
 def classify_pdf(client, pdf: bytes, model: str) -> tuple[dict, dict]:
     """PDF を Claude に読ませて、SCHEMA の形の分類と使ったトークン数を返す。"""
     content = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
@@ -127,6 +161,10 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 60, limit: int | None
     done = set(pd.read_parquet(done_p)["id"]) if done_p.exists() else set()
     model = os.environ.get("KABUSCOUT_REASON_MODEL", DEFAULT_MODEL)
     client = _client()
+    stop = check_api(client)
+    if stop:
+        log.error("理由の分類を中止: %s", stop)
+        return dict(targets=0, failed=0, total_docs=len(done), minutes=0.0, model=model, stopped=stop)
     targets = _list_targets(days, done)[: limit or None]
     log.info("理由の分類: 未処理 %d件（モデル %s）", len(targets), model)
     t0, rows, new_ids, fails, futs = time.time(), [], [], 0, []
@@ -146,17 +184,21 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 60, limit: int | None
                     title=t["title"], model=model, **use, **res)
 
     def collect(f, t):
-        nonlocal fails
+        nonlocal fails, stop
         try:
             rows.append(f.result())
             new_ids.append(str(t["id"]))
         except Exception as e:
             log.warning("理由の分類 %s %s: %s", t.get("id"), (t.get("title") or "")[:30], e)
             fails += 1
+            stop = stop or api_stop_reason(e)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for t in targets:
             if time.time() - t0 > max_minutes * 60:
+                break
+            if stop:  # キーが無効・残高切れなら、残りの PDF は取りに行かない
+                log.error("理由の分類を中止: %s", stop)
                 break
             url = t["document_url"].split("rd.php?")[-1]
             try:
@@ -179,7 +221,8 @@ def update(cfg: dict, days: int = 30, max_minutes: float = 60, limit: int | None
             collect(f, t)
     flush()
     total = len(set(pd.read_parquet(done_p)["id"])) if done_p.exists() else 0
-    info = dict(targets=len(targets), failed=fails, total_docs=total, minutes=round((time.time() - t0) / 60, 1), model=model)
+    info = dict(targets=len(targets), failed=fails, total_docs=total, minutes=round((time.time() - t0) / 60, 1), model=model,
+                **({"stopped": stop} if stop else {}))
     log.info("理由の分類: 対象 %d件（失敗 %d件）／累計 %d件", len(targets), fails, total)
     return info
 
@@ -189,4 +232,6 @@ if __name__ == "__main__":  # launchd から: python -m kabuscout.tdnet_reasons
     from .config import load_config
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    print(pd.Timestamp.now(), update(load_config(), days=30, max_minutes=float(sys.argv[1]) if len(sys.argv) > 1 else 90))
+    info = update(load_config(), days=30, max_minutes=float(sys.argv[1]) if len(sys.argv) > 1 else 90)
+    print(pd.Timestamp.now(), info)
+    notify_stop("理由の分類", info)

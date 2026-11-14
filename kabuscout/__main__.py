@@ -151,18 +151,30 @@ def main(argv=None):
             sys.exit(1)
     elif a.command in ("shadow-due", "shadow-train"):
         import os
-        from . import pool, shadow
+        from . import pool, revnet, shadow
         from .pipeline import dataset
         if a.command == "shadow-due":
             proxy = cfg["universe"]["market_proxy"]
             dates = data.PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index.to_series()
-            keys = shadow.due(cfg, dates)
+            keys = shadow.due(cfg, dates) + (["revnet"] if revnet.due(cfg, dates) else [])
         else:
             pl = pool.load(cfg)
-            ds = dataset(cfg, pl)
-            before = shadow.due(cfg, ds["date"].drop_duplicates())
-            shadow.ensure(cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
-            keys = [k for k in before if k not in shadow.due(cfg, ds["date"].drop_duplicates())]  # 学習できたもの
+            if pl is None:  # シグナル表の定義が変わった（例: 業績修正の過去分がそろった）日は、翌日の実行で作り直してから学習する
+                keys = []
+            else:
+                ds = dataset(cfg, pl)
+                dates = ds["date"].drop_duplicates()
+                before = shadow.due(cfg, dates)
+                shadow.ensure(cfg, ds, pl["date"].max().strftime("%Y-%m-%d"))
+                keys = [k for k in before if k not in shadow.due(cfg, dates)]  # 学習できたもの
+                if revnet.due(cfg, dates):  # 比較用の口座その3（修正好反応）のAI。失敗しても本番は止めない
+                    try:
+                        from .pipeline import params_path
+                        from .strategies import load_params
+                        revnet.train(cfg, pl, load_params(params_path(cfg)), pl["date"].max().strftime("%Y-%m-%d"))
+                        keys.append("revnet")
+                    except Exception as e:
+                        print(f"修正好反応の比較用AIの学習に失敗（本番は続行）: {e}")
         print(f"{a.command}: {keys}")
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as f:

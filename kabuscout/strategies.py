@@ -167,6 +167,9 @@ def plan_for(keys: list[str], labeling: dict) -> dict:
     for s in STRATEGIES:
         if s.key in keys and s.key in per:
             return dict(per[s.key], source=s.key)
+    for k in keys:  # 本番の一覧に無い網（比較用の口座の「修正好反応」、kabuscout/revnet.py）
+        if k in per and k not in BY_KEY:
+            return dict(per[k], source=k)
     return dict(tp_atr=labeling["tp_atr"], sl_atr=labeling["sl_atr"], horizon_days=labeling["horizon_days"], source="")
 
 

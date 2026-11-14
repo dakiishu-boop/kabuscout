@@ -16,14 +16,14 @@ import logging
 import numpy as np
 import pandas as pd
 
-from . import data, dividends, earnings, edinet, events, forecast, jquants, learner, macro, regimes, tdnet
+from . import data, dividends, earnings, edinet, events, forecast, jquants, learner, macro, regimes, revnet, tdnet
 from .indicators import CANDIDATE_FEATURES, FEATURES, RAW_FIELDS, compute
 from .strategies import detect_all, loose_params
 
 log = logging.getLogger(__name__)
-POOL_VERSION = 12
+POOL_VERSION = 13   # 13: 修正好反応（比較用の口座、revnet）の列と行を足した
 FIELDS = list(dict.fromkeys(FEATURES + RAW_FIELDS + earnings.EARN_FEATURES + events.EVENT_FEATURES
-                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + forecast.FC_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES + CANDIDATE_FEATURES))
+                            + dividends.DIV_FEATURES + edinet.FIN_FEATURES + forecast.FC_FEATURES + macro.MACRO_FEATURES + jquants.JQ_FEATURES + CANDIDATE_FEATURES + revnet.REV_FEATURES))
 WARMUP_DAYS = 600   # 250日線などの計算に必要な助走（暦日）
 RECENT_DAYS = 200    # 毎日計算し直す直近期間（暦日）
 
@@ -36,8 +36,10 @@ def _lookahead(cfg: dict) -> int:
 def _earn_stamp(cfg: dict) -> str:
     """決算データが増えたらシグナル表を作り直すための目印（週単位）。"""
     ev, td, fin, jq = earnings.load(cfg), tdnet.load(cfg), edinet.load(cfg), jquants.load_fins(cfg)
-    return (f"{0 if ev is None else ev['code'].nunique() // 50}-{0 if td is None else len(td) // 20000}"
-            f"-{0 if fin is None else len(fin) // 3000}-{0 if jq is None else len(jq) // 20000}")
+    # 業績修正だけの題名（比較用の口座のために過去分を取り直している、revnet）は数えない。過去分がそろった時に1回だけ作り直す
+    n_td = 0 if td is None else int((td["events"] != "revision").sum())
+    return (f"{0 if ev is None else ev['code'].nunique() // 50}-{n_td // 20000}"
+            f"-{0 if fin is None else len(fin) // 3000}-{0 if jq is None else len(jq) // 20000}-r{int(tdnet.revisions_ready(cfg))}")
 
 
 def _signature(cfg: dict) -> str:
@@ -73,6 +75,8 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     ev = earnings.combine(earnings.load(cfg), events.earnings_dates(td))
     ind.update(earnings.wide_features(ev, ind["close"], ind["volume"], panel["close"][proxy].ffill()))
     ind.update(events.wide_features(td, ind["close"]))
+    # 比較用の口座「修正好反応」だけが使う列（本番のAIの特徴量には入れない）
+    ind.update(revnet.wide_features(revnet.rows(cfg, td), ind["close"], ind["volume"], panel["close"][proxy].ffill()))
     ind.update(dividends.wide_features(store.load_dividends(codes=list(ind["close"].columns)), ind["close"]))
     px = ind.get("px_actual", ind["close"])  # 1株あたりの財務の値（報告書の値）は、分割前の実際の株価と比べる
     ind.update(edinet.wide_features(edinet.load(cfg), px))
@@ -87,6 +91,8 @@ def build_window(store, cfg: dict, uni: pd.DataFrame, start: str | None, end: st
     any_sig = None
     for m in sigs.values():
         any_sig = m if any_sig is None else (any_sig | m)
+    # 修正好反応だけに当たる行も残す（本番の候補表 strategies.apply_flags はどの本番の網にも当たらない行を落とすので、本番は変わらない）
+    any_sig = any_sig | (revnet.pool_mask(ind) & mask)
     arr = any_sig.to_numpy().copy()
     idx = ind["close"].index
     if keep_from:

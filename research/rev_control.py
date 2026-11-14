@@ -26,7 +26,7 @@ import event_nets as en
 import numpy as np
 import pandas as pd
 
-from kabuscout import earnings, events, tdnet
+from kabuscout import events, revnet, tdnet
 from kabuscout.config import load_config
 from kabuscout.pipeline import store_of
 
@@ -66,10 +66,12 @@ def pseudo_events(close: pd.DataFrame, volume: pd.DataFrame, mkt: pd.Series, tit
     return pd.DataFrame({"pubdate": idx[k] + pd.Timedelta(hours=10), "code": cols[j]})
 
 
-def _earn_with_ctl(ev, close, volume, mkt, max_age: int = 60):
-    out = en._ORIG_EARN(ev, close, volume, mkt, max_age)
-    out.update(en.rev_wide(pseudo_events(close, volume, mkt, CTL["titles"], CTL["start"]), close, volume, mkt, max_age))
-    return out
+_ORIG_REV = revnet.wide_features
+
+
+def _ctl_wide(rev, close, volume, mkt, max_age: int = 60):
+    """シグナル表の rev_* の列を、本当の修正の代わりに架空の開示から作る。"""
+    return _ORIG_REV(pseudo_events(close, volume, mkt, CTL["titles"], CTL["start"]), close, volume, mkt, max_age)
 
 
 def event_day_pos(d: pd.DataFrame, cal: pd.DatetimeIndex) -> np.ndarray:
@@ -97,11 +99,10 @@ def main() -> None:
     cost = cfg["research"]["cost"]
 
     # 修正好反応（保存済みの表。event_nets.py --arms base,rev で作ったもの）
-    earnings.wide_features = en._earn_with_rev
     rev = lab.outcomes(cfg_rev, lab.dataset(cfg_rev, lab.build_pool(cfg_rev, store, uni, "nets_rev", False)))
     rev = rev[[c for c in rev.columns if c in ("date", "code", "ret_plan", "n_strat", "rev_age") or c.startswith("s_")]]
     # 対照（開示の無い日の急騰・大商い）
-    earnings.wide_features = _earn_with_ctl
+    revnet.wide_features = _ctl_wide
     ctl = lab.outcomes(cfg_rev, lab.dataset(cfg_rev, lab.build_pool(cfg_rev, store, uni, "nets_ctl", a.rebuild)))
     ctl = ctl[[c for c in ctl.columns if c in ("date", "code", "ret_plan", "n_strat", "rev_age") or c.startswith("s_")]]
 

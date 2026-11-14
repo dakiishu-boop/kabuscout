@@ -122,6 +122,12 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     if done and done[0] == "ok" and not force:
         log.info("%s は処理済み（休場日か二重実行）。--force で再実行できます", data_date)
         return None
+    try:  # 比較用の口座「修正好反応」だけが使う、前の営業日の夕方〜今日の場中の業績修正の題名（本番の適時開示の表には書かない）
+        from . import revnet
+        if revnet.load(cfg) is not None:
+            log.info("直近の業績修正の題名 %d件（比較用の口座だけが使う）", revnet.fetch_recent(cfg, cutoff - pd.Timedelta(days=4)))
+    except Exception as e:
+        log.warning("直近の業績修正の題名の取得に失敗（本番は続行）: %s", e)
     log.info("指標とシグナルを計算中…（データ日付 %s）", data_date)
     ind, pl = pool.refresh(store, cfg, uni, cutoff)
     ds = dataset(cfg, pl)
@@ -146,11 +152,13 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     today = ds[ds["date"] == last].copy()
     from . import alerts
     danger = alerts.load(cfg, pd.Timestamp.today())  # 監理・整理銘柄と上場廃止予定は買わない（生存者バイアスの穴を本番で塞ぐ）
+    excluded = set(danger or {})  # 比較用の口座（修正好反応）も同じ銘柄を除く
     if danger and today["code"].isin(danger).any():
         log.info("上場廃止のおそれがある銘柄を候補から除外: %s", ", ".join(f"{c}（{danger[c]}）" for c in today["code"] if c in danger))
         today = today[~today["code"].isin(danger)]
     try:  # 買収の発表があって株価が買付価格に張り付いている銘柄も買わない（過去ペーパートレードに出てこない本番だけの穴、§75）
         buyout = tdnet.pending_buyouts(tdnet.load(cfg), pd.Timestamp.today().normalize())
+        excluded |= set(buyout)
         if buyout and today["code"].isin(buyout).any():
             log.info("買収の発表がある銘柄を候補から除外: %s", ", ".join(f"{c}（{buyout[c]}）" for c in today["code"] if c in buyout))
             today = today[~today["code"].isin(buyout)]
@@ -209,6 +217,10 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
                 pt["conf"] = cf
         except Exception as e:
             log.warning("比較用の口座（自信で買う量を変える）の更新に失敗（本番は続行）: %s", e)
+        try:  # 比較用の口座その3（修正好反応の網を足したAI）。過去の題名がそろい、比較用のAIができてから始める（本番の判断には使わない。ジャーナル 84・85）
+            pt.update(_rev_account(cfg, con, ind, pl, last, excluded, bundle, weights, names, uni, crisis))
+        except Exception as e:
+            log.warning("比較用の口座（修正好反応）の更新に失敗（本番は続行）: %s", e)
     rep = report.build(cfg, con, ind, top, len(today), n_scanned, bundle, weights, pt, data_date, regime)
     try:  # 取得に失敗しても実行は成功扱いになるデータ（適時開示など）の遅れを、通知の先頭で知らせる
         from . import freshness
@@ -255,6 +267,7 @@ def run_research(cfg: dict, research: bool = True, trials=None, budget_min=None,
         macro.update(cfg)
         for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=60)),
                          ("適時開示", lambda: tdnet.update(cfg, max_minutes=120)),
+                         ("業績修正の題名の過去分", lambda: tdnet.backfill_revisions(cfg, max_minutes=60)),
                          ("財務データ", lambda: edinet.update(cfg, max_minutes=60)),  # 研究ループの時間（約3時間）と合わせて制限時間内に収める
                          ("J-Quants 決算サマリ", lambda: jquants.update_fins(cfg, max_minutes=60))):
             try:
@@ -346,6 +359,7 @@ def collect_extra(cfg: dict, uni: pd.DataFrame) -> None:
     for name, fn in (("決算情報", lambda: earnings.update(cfg, uni["code"].tolist(), max_minutes=lim)),
                      ("需給データ", lambda: flows.collect(cfg)),
                      ("適時開示", lambda: tdnet.update(cfg, max_minutes=lim)),
+                     ("業績修正の題名の過去分", lambda: tdnet.backfill_revisions(cfg, max_minutes=lim)),  # 比較用の口座（修正好反応）のため。そろったら何もしない
                      ("財務データ", lambda: edinet.update(cfg, max_minutes=20)),
                      ("J-Quants 決算サマリ", lambda: jquants.update_fins(cfg, max_minutes=20)),
                      ("決算短信の数値（TDnet XBRL）", lambda: tdnet_xbrl.update(cfg, days=30, max_minutes=20))):
@@ -386,3 +400,34 @@ def _label_live(con, ds: pd.DataFrame) -> None:
     con.executemany("UPDATE signals SET label=?, ret=?, exit_days=?, labeled=1 WHERE date=? AND code=?",
                     [(int(r.label), float(r.ret), int(r.exit_days), r.date, r.code) for r in m.itertuples()])
     con.commit()
+
+
+def _rev_account(cfg: dict, con, ind: dict, pl: pd.DataFrame, last: pd.Timestamp, excluded: set, bundle, weights: dict,
+                 names: dict, uni: pd.DataFrame, crisis: bool) -> dict:
+    """比較用の口座その3「修正好反応」（kabuscout/revnet.py）。修正好反応の網と印を足したAIの上位を、本番と同じルールで買う。
+    返す値は通知に足す分（{"rev": 口座のまとめ} か、準備中の {"rev_wait": 説明}）。"""
+    from . import revnet, shadow
+    if not shadow.account(revnet.ACCT):
+        return {}
+    rb = revnet.load(cfg)
+    if rb is None:
+        done, total = tdnet.backfill_progress(cfg)
+        why = (f"業績修正の過去の題名を取得中 {done:,}/{total:,}日" if not tdnet.revisions_ready(cfg)
+               else "比較用のAIの学習待ち（毎日の実行の後に別の仕事で学習）")
+        return {"rev_wait": f"修正好反応の口座: 準備中（{why}）"}
+    c = revnet.cfg_for(cfg)
+    sc = revnet.picks(cfg, pl, load_params(params_path(cfg)), last, excluded, rb, bundle, weights)
+    top = sc.head(cfg["screening"]["top_n"]).copy()
+    top["name"] = top["code"].map(names).fillna("")
+    top["sector"] = top["code"].map(dict(zip(uni["code"], uni["sector33"]))).fillna("?")
+    plans = [plan_for(k.split(","), c["labeling"]) for k in top["strategies"]]
+    for col, key in (("tp_atr", "tp_atr"), ("sl_atr", "sl_atr"), ("horizon", "horizon_days")):
+        top[col] = [p[key] for p in plans]
+    first = paper.start_from(con, "paper", revnet.ACCT)
+    rv = paper.step(con, c, ind, top, last, crisis=crisis, acct=revnet.ACCT)
+    rv["events"] = first + rv["events"]
+    rv["diff_orders"] = con.execute(  # 本番の口座に無い注文（同じ日・同じ銘柄の注文が本番に無いもの）
+        f"SELECT COUNT(*) FROM {revnet.ACCT}_positions r WHERE r.status IN ('pending','open','closed') AND NOT EXISTS "
+        "(SELECT 1 FROM paper_positions p WHERE p.code=r.code AND p.signal_date=r.signal_date)").fetchone()[0]
+    rv["rev_today"] = int((top.head(cfg["paper_trading"].get("picks_per_day", 2))[revnet.FLAG] == 1).sum()) if revnet.FLAG in top else 0
+    return {"rev": rv}

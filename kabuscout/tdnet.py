@@ -17,6 +17,7 @@ import logging
 import re
 import time
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -46,8 +47,9 @@ TOB_END = re.compile(r"(当社|当社の)(普通)?(株式|株券).{0,30}公開�
 # events.EVENT_TYPES には入れないので AI の特徴量・戦略は変わらない（§84）
 REVISION = re.compile(r"業績予想.*修正|上方修正|下方修正|予想.{0,8}実績.{0,8}差異")
 # 分類のルールを足したとき、直近400日だけ一度取り直す（目印のファイル名。足すたびに1つ増やす）
-RESCANS = ["tdnet_rescan_tob_v1",   # 買収の発表（tob_target/tob_end）
-           "tdnet_rescan_rev_v1"]   # 業績予想の修正（revision）
+RESCANS = ["tdnet_rescan_tob_v1"]   # 買収の発表（tob_target/tob_end）
+# 業績予想の修正は、比較用のAIの学習に2010年からの過去分が要るので、全期間を一度だけ取り直す（backfill_revisions。直近400日の取り直しはしない）
+BACKFILL = "tdnet_rev_backfill.json"   # {"until": 取り直す最後の日, "done": [取り直した日]}
 
 
 def classify(title: str) -> list[str]:
@@ -147,3 +149,87 @@ def _save(p, meta_p, old, rows, done):
         old.to_parquet(p)
     meta_p.write_text(json.dumps(sorted(done)))
     return old
+
+
+def _backfill_state(cfg: dict) -> tuple:
+    p = _path(cfg).with_name(BACKFILL)
+    return p, (json.loads(p.read_text()) if p.exists() else {})
+
+
+def revisions_ready(cfg: dict, start: str = "2010-01-01") -> bool:
+    """業績修正の題名の過去分がそろったか（backfill_revisions が最後の日まで取り終えた）。"""
+    _, st = _backfill_state(cfg)
+    if not st.get("until"):
+        return False
+    done = set(st.get("done") or [])
+    return all(d.strftime("%Y%m%d") in done for d in pd.date_range(start, st["until"]))
+
+
+def backfill_progress(cfg: dict, start: str = "2010-01-01") -> tuple[int, int]:
+    """(取り直した日数, 全部の日数)。"""
+    _, st = _backfill_state(cfg)
+    days = pd.date_range(start, st.get("until") or pd.Timestamp.today().normalize())
+    done = set(st.get("done") or [])
+    return sum(d.strftime("%Y%m%d") in done for d in days), len(days)
+
+
+def _merge_revisions(old: pd.DataFrame, rows: list[dict]) -> pd.DataFrame:
+    """取り直した業績修正の題名を足す。保存済みの題名には revision の印を足すだけ、無かった題名は revision だけで足す
+    （ほかの分類は変えない＝本番の特徴量・候補は変わらない）。"""
+    if not rows:
+        return old
+    new = pd.DataFrame(rows).drop_duplicates(["pubdate", "code", "title"])
+    k = ["pubdate", "code", "title"]
+    k_old, k_new = pd.MultiIndex.from_frame(old[k]), pd.MultiIndex.from_frame(new[k])
+    m = k_old.isin(k_new) & ~old["events"].fillna("").str.contains("revision")
+    ev = old.loc[m, "events"].fillna("")
+    old.loc[m, "events"] = np.where(ev == "", "revision", ev + ",revision")
+    return pd.concat([old, new[~k_new.isin(k_old)].assign(events="revision")], ignore_index=True)
+
+
+def backfill_revisions(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = None,
+                       today: pd.Timestamp | None = None) -> int:
+    """業績修正の題名の過去分（2010年〜、初めて動いた日まで）を一度だけ取り直して足す。時間切れなら次回の続きから
+    （1日1回の取得・1秒おき。全部で約6,200回）。それより後の日は、ふだんの update が今のルール（revision を含む）で取る。足した件数を返す。"""
+    p, st = _backfill_state(cfg)
+    until = pd.Timestamp(st.get("until") or (today or pd.Timestamp.today()).normalize())
+    done = set(st.get("done") or [])
+    days = [d for d in pd.date_range(start, until) if d.strftime("%Y%m%d") not in done]
+    save_state = lambda: p.write_text(json.dumps(dict(until=until.strftime("%Y-%m-%d"), done=sorted(done))))
+    if not days:
+        save_state()
+        return 0
+    tp = _path(cfg)
+    old = pd.read_parquet(tp) if tp.exists() else pd.DataFrame(columns=["pubdate", "code", "title", "events"])
+    t0, rows, n = time.time(), [], 0
+
+    def flush(old, rows):
+        old = _merge_revisions(old, rows)
+        old.to_parquet(tp)
+        save_state()
+        return old
+
+    for i, d in enumerate(days):
+        if max_minutes and time.time() - t0 > max_minutes * 60:
+            log.info("  業績修正の過去分: 時間切れ（%d/%d日、続きは次回）", i, len(days))
+            break
+        key = d.strftime("%Y%m%d")
+        try:
+            r = requests.get(API.format(d=key), headers=UA, timeout=30)
+            r.raise_for_status()
+            for it in r.json().get("items", []):
+                t = it.get("Tdnet", it)
+                if "revision" in classify(t["title"]):
+                    rows.append(dict(pubdate=pd.Timestamp(t["pubdate"]), code=str(t["company_code"])[:4], title=t["title"]))
+            done.add(key)
+        except Exception as e:
+            log.warning("  業績修正の過去分の取得失敗 %s: %s", key, e)
+            time.sleep(10)
+        if i % 250 == 0 and rows:  # 途中経過も保存（中断しても取得済みの分は残す）
+            n += len(rows)
+            old, rows = flush(old, rows), []
+            log.info("  業績修正の過去分 %d / %d 日", i, len(days))
+        time.sleep(1.0)
+    n += len(rows)
+    flush(old, rows)
+    return n

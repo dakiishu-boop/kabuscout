@@ -115,13 +115,22 @@ def _conf_text(pt: dict) -> str:
             f"多めに買った注文 {s.get('sized', 0)}回・最高値から {s.get('drawdown', 0):+.1%}）")
 
 
+def _rev_text(pt: dict) -> str:
+    """比較用の口座その3（修正好反応の網と印を足したAI、ジャーナル 84・85）の一行。"""
+    s = pt["rev"]
+    return (f"修正好反応を足した口座: 評価額 {s['equity']:,.0f}円（本番との差 {s['equity'] - pt['equity']:+,.0f}円・"
+            f"本番と違う注文 {s.get('diff_orders', 0)}回・最高値から {s.get('drawdown', 0):+.1%}）")
+
+
 def _side_lines(pt: dict) -> list[str]:
     """比較用の口座（本番の判断には使わない）の行。口座ごとに、まとめの1行とその日の出来事。"""
     L = []
-    for key, text in (("swap", _swap_text), ("conf", _conf_text)):
+    for key, text in (("swap", _swap_text), ("conf", _conf_text), ("rev", _rev_text)):
         if pt.get(key):
             L.append(text(pt))
             L += [f"• {e}" for e in pt[key]["events"]]
+    if pt.get("rev_wait"):
+        L.append(pt["rev_wait"])
     return L
 
 

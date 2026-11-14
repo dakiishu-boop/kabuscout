@@ -39,7 +39,7 @@ import _lab as lab
 import numpy as np
 import pandas as pd
 
-from kabuscout import earnings, events, learner, pool, strategies, tdnet
+from kabuscout import earnings, events, learner, pool, revnet, strategies, tdnet
 from kabuscout.config import load_config
 from kabuscout.pipeline import store_of
 
@@ -144,7 +144,8 @@ def register_rev(cfg: dict, titles: pd.DataFrame) -> dict:
     if "rev_drift" in strategies.BY_KEY:
         return cfg
     STATE["rev"] = titles[titles["title"].map(is_revision)][["pubdate", "code"]].reset_index(drop=True)
-    earnings.wide_features = _earn_with_rev            # pool.build_window が close・volume・日経平均を渡してくれる場所
+    # シグナル表の rev_* の列は本番の kabuscout/revnet.py が作る（式は rev_wide と同じ）。題名だけこの検証の拾い方に差し替える
+    revnet.rows = lambda _cfg, _td: STATE["rev"]
     pool.FIELDS.extend(f for f in REV_FEATURES if f not in pool.FIELDS)
     strategies.STRATEGIES.append(REV_STRATEGY)
     strategies.BY_KEY["rev_drift"] = REV_STRATEGY

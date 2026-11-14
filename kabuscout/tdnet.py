@@ -42,6 +42,12 @@ TOB_TARGET = re.compile(r"(当社|当社の)(普通)?(株式|株券)(等)?(に�
                         r"単元株式数の定めの廃止|当社株式の上場廃止")
 TOB_NOT = re.compile(r"訂正|不成立|撤回|中止|自己株式|公開買付けへの応募|子会社(?!化)|名古屋|札幌|福岡|プロマーケット|PRO Market|上場廃止申請|反対")
 TOB_END = re.compile(r"(当社|当社の)(普通)?(株式|株券).{0,30}公開買付.{0,40}(不成立|撤回|中止)")
+# 業績予想の修正・予想と実績の差異（研究の「修正好反応」と同じ拾い方。訂正だけ除く）。将来の検証（前向きテスト）のために題名を残すだけで、
+# events.EVENT_TYPES には入れないので AI の特徴量・戦略は変わらない（§84）
+REVISION = re.compile(r"業績予想.*修正|上方修正|下方修正|予想.{0,8}実績.{0,8}差異")
+# 分類のルールを足したとき、直近400日だけ一度取り直す（目印のファイル名。足すたびに1つ増やす）
+RESCANS = ["tdnet_rescan_tob_v1",   # 買収の発表（tob_target/tob_end）
+           "tdnet_rescan_rev_v1"]   # 業績予想の修正（revision）
 
 
 def classify(title: str) -> list[str]:
@@ -49,9 +55,10 @@ def classify(title: str) -> list[str]:
     if TOB_END.search(t) and "訂正" not in t and "自己株式" not in t:
         return ["tob_end"]
     out = ["tob_target"] if TOB_TARGET.search(t) and not TOB_NOT.search(t) else []
+    rev = ["revision"] if REVISION.search(t) and "訂正" not in t else []
     if EXCLUDE.search(t):
-        return out
-    return out + [k for k, pat in EVENT_RULES if re.search(pat, t)]
+        return out + rev
+    return out + [k for k, pat in EVENT_RULES if re.search(pat, t)] + rev
 
 
 def pending_buyouts(td: pd.DataFrame | None, today: pd.Timestamp, days: int = 365) -> dict[str, str]:
@@ -82,11 +89,12 @@ def update(cfg: dict, start: str = "2010-01-01", max_minutes: float | None = Non
     raw = json.loads(meta_p.read_text()) if meta_p.exists() else []
     done = set(raw.values() if isinstance(raw, dict) else raw)
     today = pd.Timestamp.today().normalize()
-    rescan = p.with_name("tdnet_rescan_tob_v1")  # 買収の発表（tob_target/tob_end）を足したので、直近400日だけ一度取り直す
-    if not rescan.exists() and done:
+    todo = [p.with_name(n) for n in RESCANS if not p.with_name(n).exists()]
+    if todo and done:  # 分類のルールを足したので、直近400日だけ一度取り直す（前は保存しなかった題名を拾うため）
         done -= {d.strftime("%Y%m%d") for d in pd.date_range(today - pd.Timedelta(days=400), today)}
         meta_p.write_text(json.dumps(sorted(done)))
-        rescan.touch()
+        for r in todo:
+            r.touch()
     n = _reclassify(old, today - pd.Timedelta(days=400))
     if n:
         old.to_parquet(p)

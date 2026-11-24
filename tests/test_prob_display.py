@@ -83,19 +83,28 @@ def test_answer_stats_uses_cost_and_pending(cfg):
     rows = [("2026-11-0%d" % i, "1%03d" % i, "earnings_drift", 0.35, 0.01, 1, 1 if i < 3 else 0, 1, 1 if i < 2 else 0, 0.10 if i < 2 else -0.05)
             for i in range(1, 5)]
     rows += [("2026-11-05", "9999", "earnings_drift", 0.15, None, 0, None, 0, None, None)]  # 未決着
+    # 損切で早く決着したが、まだ保有の期限まで日がたっていない → 未決着に数える（早い損切で負けに偏らないように）
+    rows += [("2026-11-30", "8888", "earnings_drift", 0.35, 0.01, 1, 0, 1, 0, -0.20)]
+    rows += [(f"2026-12-{d:02d}", f"7{d:03d}", "squeeze", None, None, 0, None, 0, None, None) for d in range(1, 9)]  # 後の日（日数を数えるため）
     con.executemany("INSERT INTO signals(date, code, strategies, prob, exp_ret, labeled, label, labeled_plan, label_plan, ret_plan) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
     con.commit()
     a = report.answer_stats(con, cfg)
     s = a["strategies"][0]
     cost = cfg["research"]["cost"]
-    assert (s["n"], s["pending"], s["ref"]) == (4, 1, True)
+    assert s["name"] == "決算好反応" and (s["n"], s["pending"], s["ref"]) == (4, 2, True)
     assert abs(s["win"] - 0.25) < 1e-9 and abs(s["avg"] - ((0.10 - 0.05 * 3) / 4 - cost)) < 1e-9
     assert a["exp"]["n"] == 4 and abs(a["exp"]["actual"] - s["avg"]) < 1e-9
     band = [c for c in a["calib"] if c["lo"] == 0.3][0]
     assert band["n"] == 4 and abs(band["actual"] - 0.5) < 1e-9
     txt = "\n".join(report.answer_lines(a))
-    assert "未決着1件" in txt and "参考値" in txt and f"コスト{cost:.1%}引き" in txt
+    assert "未決着2件" in txt and "参考値" in txt and f"コスト{cost:.1%}引き" in txt
+
+
+def test_answer_stats_failure_does_not_break_the_report(cfg, monkeypatch):
+    con = db.connect(cfg["data"]["db_path"])
+    monkeypatch.setattr(report, "answer_stats", lambda *a: 1 / 0)
+    assert report._safe_answers(con, cfg) is None
 
 
 def test_labels_are_named_by_what_they_measure(cfg):

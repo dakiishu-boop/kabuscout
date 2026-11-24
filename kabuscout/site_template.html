@@ -299,14 +299,15 @@ const avg = a => a.length ? a.reduce((x, r) => x + r.ret, 0) / a.length : null;
 // 実際の売買ルールでの答え合わせ・先着率の当たり具合（ジャーナル §89）
 function answersHtml(a) {
   if (!a || !((a.strategies || []).length || (a.calib || []).length)) return "";
-  let h = `<h2>実際の売買ルールでの答え合わせ</h2><p class="small muted">勝ち＝利確が先に来た割合。平均は期限切れ込みの1回あたりの損益からコスト${pct(a.cost)}を引いた値（予想リターンと同じ基準）。
-    決着していない分は集計に入れていません。${a.min_n}件未満は参考値です。</p>
+  let h = `<h2>実際の売買ルールでの答え合わせ</h2><p class="small muted">対象は通知・Webに出した上位15件。勝ち＝利確が先に来た割合。平均は期限切れ込みの1回あたりの損益からコスト${pct(a.cost)}を引いた値（予想リターンと同じ基準）。
+    損切は利確より早く決着するので、保有の期限まで日がたった分だけを数え、それ以外は「未決着」にしています。${a.min_n}件未満は参考値です。
+    売買ルールは今のもので計算し直しています（途中でルールが変わった戦略は、その日の通知の利確・損切と違うことがあります）。</p>
     <div class="card tbl"><table><thead><tr><th>戦略</th><th class="hide-sm">売買ルール</th><th class="num">決着</th><th class="num">勝率</th><th class="num">平均</th><th class="num">未決着</th></tr></thead><tbody>` +
     a.strategies.map(r => `<tr><td>${esc(r.name)}${r.n && r.ref ? ` <span class="muted small">参考値</span>` : ""}</td><td class="small hide-sm">${esc(r.rule)}</td>
       <td class="num">${r.n}件</td><td class="num">${r.n ? pct0(r.win) : "-"}</td><td class="num ${cls(r.avg)}">${r.n ? pct(r.avg, 2) : "-"}</td><td class="num">${r.pending}件</td></tr>`).join("") +
     `</tbody></table></div>`;
   if (a.exp) h += `<p class="small">予想リターンと実績（同じ${a.exp.n}件）: 予想 <b>${pct(a.exp.pred, 2)}</b> ／ 実績 <b class="${cls(a.exp.actual)}">${pct(a.exp.actual, 2)}</b>${a.exp.n < a.min_n ? `（参考値）` : ""}</p>`;
-  if ((a.calib || []).length) h += `<h2>先着率の当たり具合</h2><p class="small muted">予測した${esc(DATA.prob_name || "先着率")}の帯ごとに、共通ルールで実際に +${DATA.config.tp_atr}ATR が先に来た割合。予測と実際が近いほど、確率として信用できます。</p>
+  if ((a.calib || []).length) h += `<h2>先着率の当たり具合</h2><p class="small muted">予測した${esc(DATA.prob_name || "先着率")}の帯ごとに、共通ルールで実際に +${DATA.config.tp_atr}ATR が先に来た割合（${DATA.config.horizon}営業日たった分だけ）。予測と実際が近いほど、確率として信用できます。</p>
     <div class="card tbl"><table><thead><tr><th>予測の帯</th><th class="num">件数</th><th class="num">予測の平均</th><th class="num">実際</th></tr></thead><tbody>` +
     a.calib.map(c => `<tr><td>${pct0(c.lo)}〜${pct0(c.hi)}</td><td class="num">${c.n}件</td><td class="num">${pct0(c.pred)}</td><td class="num">${pct0(c.actual)}</td></tr>`).join("") + `</tbody></table></div>`;
   return h;

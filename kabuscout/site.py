@@ -93,7 +93,7 @@ def collect(con, cfg: dict) -> dict:
         backtest=_without(load_json("backtest.json"), "expect"), research=load_json("research.json"), events=regimes.events_table(),
         data_sources=_sources(cfg),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
-        summaries=summaries, signals=_records(signals), answers=report.answer_stats(con, cfg),
+        summaries=summaries, signals=_records(signals), answers=report._safe_answers(con, cfg),
         prob_name=report.prob_name(cfg), prob_note=report.prob_note(cfg), positions=_records(positions),
         models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd, paper_health=paper_health, core_state=core_state,
         strategies={s.key: dict(name=s.name, desc=s.desc) for s in STRATEGIES},

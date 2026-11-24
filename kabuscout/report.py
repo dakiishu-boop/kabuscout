@@ -52,16 +52,22 @@ def answer_stats(con, cfg: dict) -> dict:
     calib: 予測の先着率の帯ごとの、共通ルールでの実際の先着率（先着率の当たり具合）。
     exp: 予想リターンと実績（同じ候補・同じ基準）。"""
     cost = float(cfg["research"]["cost"])
+    empty = dict(cost=cost, min_n=MIN_N, strategies=[], calib=[], exp=None)
     try:
-        sig = pd.read_sql("SELECT strategies, prob, exp_ret, labeled, label, labeled_plan, label_plan, ret_plan FROM signals", con)
+        sig = pd.read_sql("SELECT date, strategies, prob, exp_ret, labeled, label, labeled_plan, label_plan, ret_plan FROM signals", con)
     except Exception:
-        return dict(cost=cost, min_n=MIN_N, strategies=[], calib=[], exp=None)
+        return empty
     if sig.empty:
-        return dict(cost=cost, min_n=MIN_N, strategies=[], calib=[], exp=None)
+        return empty
     plans = [plan_for(str(k).split(","), cfg["labeling"]) for k in sig["strategies"]]
     sig["group"] = [p["source"] or str(k).split(",")[0] for p, k in zip(plans, sig["strategies"])]
     sig["rule"] = [_rule_text(p) for p in plans]
-    sig["done"] = sig["labeled_plan"].fillna(0).astype(int) == 1
+    # 損切は利確より早く決着するので、決着した分だけ数えると最初の数週間は負けに偏る。保有の期限まで日がたった候補だけを数える
+    # （日数は、その後に通知した日の数＝営業日。forward.py の「結果が出そろった日だけ数える」と同じ考え方）
+    days = sorted(sig["date"].unique())
+    after = {d: len(days) - 1 - i for i, d in enumerate(days)}
+    sig["age"] = sig["date"].map(after)
+    sig["done"] = (sig["labeled_plan"].fillna(0).astype(int) == 1) & (sig["age"] >= [p["horizon_days"] for p in plans])
     sig["net"] = sig["ret_plan"] - cost
     rows = []
     for g, x in sig.groupby("group"):
@@ -70,7 +76,7 @@ def answer_stats(con, cfg: dict) -> dict:
                          win=float(d["label_plan"].mean()) if len(d) else None, avg=float(d["net"].mean()) if len(d) else None,
                          ref=bool(len(d) < MIN_N)))
     rows.sort(key=lambda r: (-r["n"], -r["pending"]))
-    c = sig[(sig["labeled"] == 1) & sig["prob"].notna()]
+    c = sig[(sig["labeled"] == 1) & sig["prob"].notna() & (sig["age"] >= cfg["labeling"]["horizon_days"])]
     calib = []
     for lo, hi in zip(PROB_BANDS[:-1], PROB_BANDS[1:]):
         b = c[(c["prob"] >= lo) & (c["prob"] < hi)]
@@ -85,7 +91,8 @@ def answer_lines(a: dict | None, max_rows: int = 8) -> list[str]:
     """答え合わせの行（Discord・Markdown 共通）。"""
     if not a or not (a.get("strategies") or a.get("calib")):
         return []
-    L = [f"実際の売買ルールでの答え合わせ（勝ち＝利確が先・平均は期限切れ込み・コスト{a['cost']:.1%}引き）:"]
+    L = [f"通知・Webに出した上位15件の、実際の売買ルールでの答え合わせ（勝ち＝利確が先・平均は期限切れ込み・コスト{a['cost']:.1%}引き・"
+         f"保有の期限まで日がたった分だけ）:"]
     for r in a["strategies"][:max_rows]:
         res = f"{r['n']}件 勝率 {r['win']:.0%} / 平均 {r['avg']:+.2%}" if r["n"] else "決着0件"
         L.append(f"・{r['name']}（{r['rule']}）: {res}・未決着{r['pending']}件" + ("（参考値）" if r["n"] and r["ref"] else ""))
@@ -137,8 +144,18 @@ def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_da
         live=dict(n=len(live), win=float(live["label"].mean()), ret=float(live["ret"].mean())) if len(live) >= 5 else None,
         hot=[(STRATEGY_NAMES.get(k, k), w) for k, w in sorted(weights.items(), key=lambda t: -t[1])[:3]],
         paper=pt, regime=regime or dict(crisis=False, event=""),
-        prob_name=prob_name(cfg), prob_note=prob_note(cfg), answers=answer_stats(con, cfg),
+        prob_name=prob_name(cfg), prob_note=prob_note(cfg), answers=_safe_answers(con, cfg),
     )
+
+
+def _safe_answers(con, cfg: dict) -> dict | None:
+    """表示用の集計。失敗しても日々の実行（売買・保存）は止めない。"""
+    try:
+        return answer_stats(con, cfg)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("答え合わせの集計に失敗（表示だけ省略）: %s", e)
+        return None
 
 
 def crisis_line(rep: dict) -> str:
@@ -323,7 +340,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
     if rep["live"]:
         lv = rep["live"]
         lines.append(f"通知した上位5件の答え合わせ（共通ルール・コスト前）: {lv['n']}件 先着率 {lv['win']:.0%} / 平均 {lv['ret']:+.2%}")
-    lines += answer_lines(rep.get("answers"))[:12]
+    lines += answer_lines(rep.get("answers"), max_rows=5)  # Discord は1通6,000字まで。全部の表はWebに
     if rep["hot"]:
         lines.append("🔥 最近効いている戦略: " + " / ".join(f"{n}" for n, _ in rep["hot"]))
     if rep.get("forward"):

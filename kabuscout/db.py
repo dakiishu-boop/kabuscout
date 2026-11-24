@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS signals(
   final_score REAL, rank INTEGER, model_version TEXT, close REAL, atr REAL,
   tp REAL, sl REAL, reasons TEXT, earnings TEXT,
   label INTEGER, ret REAL, exit_days INTEGER, labeled INTEGER DEFAULT 0,
+  exp_ret REAL, label_plan INTEGER, ret_plan REAL, exit_plan INTEGER, labeled_plan INTEGER DEFAULT 0,
   PRIMARY KEY(date, code)
 );
 CREATE TABLE IF NOT EXISTS models(
@@ -81,5 +82,11 @@ def connect(path: Path) -> sqlite3.Connection:
     for col, typ in (("horizon", "INTEGER"), ("tp_atr", "REAL"), ("sl_atr", "REAL"), ("capital", "REAL")):
         if col not in cols:  # 売買ルールが途中で変わっても、注文した時のルールで手仕舞うため
             con.execute(f"ALTER TABLE paper_positions ADD COLUMN {col} {typ}")
+    # 通知した候補の予想リターンと、実際の売買ルール（戦略ごと）での答え合わせ（ジャーナル §89。label・ret は共通ルールのまま）
+    cols = {r[1] for r in con.execute("PRAGMA table_info(signals)")}
+    for col, typ in (("exp_ret", "REAL"), ("label_plan", "INTEGER"), ("ret_plan", "REAL"), ("exit_plan", "INTEGER"),
+                     ("labeled_plan", "INTEGER DEFAULT 0")):
+        if col not in cols:
+            con.execute(f"ALTER TABLE signals ADD COLUMN {col} {typ}")
     con.commit()
     return con

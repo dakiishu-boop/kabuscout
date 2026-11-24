@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from . import regimes
+from . import regimes, report
 from .config import ROOT
 from .risk import stop_review_threshold
 from .strategies import STRATEGIES
@@ -66,7 +66,7 @@ def collect(con, cfg: dict) -> dict:
     sums = q("SELECT data_date, json FROM summaries ORDER BY data_date DESC LIMIT 60")
     summaries = [json.loads(s) for s in sums["json"]]
     signals = q("SELECT date, code, name, strategies, prob, rank, close, tp, sl, reasons, earnings, label, ret, "
-                "exit_days, labeled FROM signals ORDER BY date DESC, rank LIMIT 1500")
+                "exit_days, labeled, exp_ret, label_plan, ret_plan, exit_plan, labeled_plan FROM signals ORDER BY date DESC, rank LIMIT 1500")
     positions = q("SELECT * FROM paper_positions WHERE status!='archived' ORDER BY id DESC")
     cap = cfg["paper_trading"]["capital_jpy"]
     eqs = q("SELECT equity FROM paper_equity WHERE capital=? ORDER BY date", (cap,))["equity"]
@@ -93,7 +93,8 @@ def collect(con, cfg: dict) -> dict:
         backtest=_without(load_json("backtest.json"), "expect"), research=load_json("research.json"), events=regimes.events_table(),
         data_sources=_sources(cfg),
         generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"),
-        summaries=summaries, signals=_records(signals), positions=_records(positions),
+        summaries=summaries, signals=_records(signals), answers=report.answer_stats(con, cfg),
+        prob_name=report.prob_name(cfg), prob_note=report.prob_note(cfg), positions=_records(positions),
         models=_records(models), stats=_records(stats), prices=prices, last_close=last_close, paper_dd=paper_dd, paper_health=paper_health, core_state=core_state,
         strategies={s.key: dict(name=s.name, desc=s.desc) for s in STRATEGIES},
         config=dict(capital=cfg["paper_trading"]["capital_jpy"], horizon=cfg["labeling"]["horizon_days"],

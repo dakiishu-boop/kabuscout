@@ -1,9 +1,10 @@
 """日次レポート。1つの report 辞書から、Markdown・Discord カード・ntfy 文面・Webページ用データを作る。"""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from .strategies import STRATEGY_NAMES
+from .strategies import STRATEGY_NAMES, plan_for
 
 WEEKDAYS = "月火水木金土日"
 MOOD_COLOR = {"強気": 0xD9534F, "中立": 0xF0AD4E, "弱気": 0x337AB7}  # 日本式: 上げ=赤
@@ -22,6 +23,80 @@ def _health_text(h: dict) -> str:
         t += (f"（直近{h['k']}回の合計 {h['live_sum']:+.1%}：過去の同じ回数の中で上位{1 - h['percentile']:.0%}・"
               f"ふつうは {h['typical']:+.1%}、下位10%は {h['low10']:+.1%}）")
     return t
+
+# ---------------------------------------------------------------- 表示名と答え合わせ（ジャーナル §89）
+MIN_N = 30  # これより少ない戦略の実績は「参考値」
+PROB_BANDS = [0.0, 0.2, 0.3, 0.4, 0.5, 1.01]
+
+
+def prob_name(cfg: dict) -> str:
+    """「AI勝率」の正確な名前: 共通ルールで +tp ATR が −sl ATR より先に来る確率。"""
+    lab = cfg["labeling"]
+    return f"+{lab['tp_atr']:g}ATR先着率({lab['horizon_days']}日)"
+
+
+def prob_note(cfg: dict) -> str:
+    lab = cfg["labeling"]
+    return (f"※先着率＝共通ルール（{lab['horizon_days']}営業日以内に +{lab['tp_atr']:g}ATR が −{lab['sl_atr']:g}ATR より先に来る）の確率。"
+            f"並んでいる利確・損切は戦略ごとの別ルール。予想リターンはその利確・損切のルールでの損益（コスト{cfg['research']['cost']:.1%}引き）の予測。"
+            f"並び順は3つのモデルの順位の平均で、先着率の順ではない")
+
+
+def _rule_text(plan: dict) -> str:
+    return f"+{plan['tp_atr']:g}ATR/−{plan['sl_atr']:g}ATR・{plan['horizon_days']}日"
+
+
+def answer_stats(con, cfg: dict) -> dict:
+    """通知・Webに出した候補の答え合わせ。
+    strategies: 実際の売買ルール（戦略ごと）での実績。勝ち＝利確が先、平均は期限切れ込みの損益 − コスト（予想リターンと同じ基準）。未決着は集計に入れない。
+    calib: 予測の先着率の帯ごとの、共通ルールでの実際の先着率（先着率の当たり具合）。
+    exp: 予想リターンと実績（同じ候補・同じ基準）。"""
+    cost = float(cfg["research"]["cost"])
+    try:
+        sig = pd.read_sql("SELECT strategies, prob, exp_ret, labeled, label, labeled_plan, label_plan, ret_plan FROM signals", con)
+    except Exception:
+        return dict(cost=cost, min_n=MIN_N, strategies=[], calib=[], exp=None)
+    if sig.empty:
+        return dict(cost=cost, min_n=MIN_N, strategies=[], calib=[], exp=None)
+    plans = [plan_for(str(k).split(","), cfg["labeling"]) for k in sig["strategies"]]
+    sig["group"] = [p["source"] or str(k).split(",")[0] for p, k in zip(plans, sig["strategies"])]
+    sig["rule"] = [_rule_text(p) for p in plans]
+    sig["done"] = sig["labeled_plan"].fillna(0).astype(int) == 1
+    sig["net"] = sig["ret_plan"] - cost
+    rows = []
+    for g, x in sig.groupby("group"):
+        d = x[x["done"]]
+        rows.append(dict(key=g, name=STRATEGY_NAMES.get(g, g), rule=x["rule"].iloc[0], n=int(len(d)), pending=int((~x["done"]).sum()),
+                         win=float(d["label_plan"].mean()) if len(d) else None, avg=float(d["net"].mean()) if len(d) else None,
+                         ref=bool(len(d) < MIN_N)))
+    rows.sort(key=lambda r: (-r["n"], -r["pending"]))
+    c = sig[(sig["labeled"] == 1) & sig["prob"].notna()]
+    calib = []
+    for lo, hi in zip(PROB_BANDS[:-1], PROB_BANDS[1:]):
+        b = c[(c["prob"] >= lo) & (c["prob"] < hi)]
+        if len(b):
+            calib.append(dict(lo=lo, hi=min(hi, 1.0), n=int(len(b)), pred=float(b["prob"].mean()), actual=float(b["label"].mean())))
+    e = sig[sig["done"] & sig["exp_ret"].notna()]
+    exp = dict(n=int(len(e)), pred=float(e["exp_ret"].mean()), actual=float(e["net"].mean())) if len(e) else None
+    return dict(cost=cost, min_n=MIN_N, strategies=rows, calib=calib, exp=exp)
+
+
+def answer_lines(a: dict | None, max_rows: int = 8) -> list[str]:
+    """答え合わせの行（Discord・Markdown 共通）。"""
+    if not a or not (a.get("strategies") or a.get("calib")):
+        return []
+    L = [f"実際の売買ルールでの答え合わせ（勝ち＝利確が先・平均は期限切れ込み・コスト{a['cost']:.1%}引き）:"]
+    for r in a["strategies"][:max_rows]:
+        res = f"{r['n']}件 勝率 {r['win']:.0%} / 平均 {r['avg']:+.2%}" if r["n"] else "決着0件"
+        L.append(f"・{r['name']}（{r['rule']}）: {res}・未決着{r['pending']}件" + ("（参考値）" if r["n"] and r["ref"] else ""))
+    if a.get("exp"):
+        x = a["exp"]
+        L.append(f"予想リターンと実績（{x['n']}件）: 予想 {x['pred']:+.2%} / 実績 {x['actual']:+.2%}" + ("（参考値）" if x["n"] < a["min_n"] else ""))
+    if a.get("calib"):
+        L.append("先着率の当たり具合（予測の帯: 実際の先着率・件数）: " + " / ".join(
+            f"{c['lo']:.0%}〜{c['hi']:.0%}: {c['actual']:.0%}・{c['n']}件" for c in a["calib"]))
+    return L
+
 
 def market_stats(ind: dict) -> dict:
     r = {k: float(ind[k].iloc[-1].iloc[0]) for k in ("mkt_dev75", "mkt_ret20", "breadth25")}
@@ -42,6 +117,7 @@ def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_da
             rank=int(r["rank"]), code=r["code"], name=r["name"],
             strategies=[STRATEGY_NAMES.get(k, k) for k in r["strategies"].split(",")],
             prob=None if pd.isna(r["prob"]) else float(r["prob"]),
+            exp_ret=None if pd.isna(r.get("exp_ret", np.nan)) else float(r["exp_ret"]),
             close=float(r["close"]), tp=float(r["tp"]), sl=float(r["sl"]),
             horizon=int(r["horizon"]) if "horizon" in r and r["horizon"] == r["horizon"] else cfg["labeling"]["horizon_days"],
             earnings_days=None if pd.isna(r["earnings_days"]) else int(r["earnings_days"]),
@@ -61,6 +137,7 @@ def build(cfg, con, ind, top, n_signals, n_scanned, bundle, weights, pt, data_da
         live=dict(n=len(live), win=float(live["label"].mean()), ret=float(live["ret"].mean())) if len(live) >= 5 else None,
         hot=[(STRATEGY_NAMES.get(k, k), w) for k, w in sorted(weights.items(), key=lambda t: -t[1])[:3]],
         paper=pt, regime=regime or dict(crisis=False, event=""),
+        prob_name=prob_name(cfg), prob_note=prob_note(cfg), answers=answer_stats(con, cfg),
     )
 
 
@@ -138,6 +215,7 @@ def _side_lines(pt: dict) -> list[str]:
 def to_markdown(rep: dict) -> str:
     m = rep["market"]
     L = [f"# KabuScout {rep['date_label']} 引け後スクリーニング", "",
+         *([rep["prob_note"], ""] if rep.get("prob_note") else []),
          f"地合い **{m['mood']}**（日経平均 75日線乖離 {m['mkt_dev75']:+.1%} / 20日 {m['mkt_ret20']:+.1%} / "
          f"25日線より上の銘柄 {m['breadth25']:.0%}）", f"{rep['n_scanned']:,}銘柄を走査 → シグナル{rep['n_signals']}件", ""]
     if crisis_line(rep):
@@ -145,8 +223,7 @@ def to_markdown(rep: dict) -> str:
     if rep.get("stale"):
         L[2:2] = [f"⚠️ データの遅れ: {s}" for s in rep["stale"]] + [""]
     for p in rep["picks"]:
-        prob = f" AI {p['prob']:.0%}" if p["prob"] is not None else ""
-        L.append(f"{p['rank']}. **{p['code']} {p['name']}**【{'・'.join(p['strategies'])}】{prob} {_earn(p)}")
+        L.append(f"{p['rank']}. **{p['code']} {p['name']}**【{'・'.join(p['strategies'])}】{_prob_text(rep, p)} {_earn(p)}")
         L.append(f"   終値 {p['close']:,.0f} → 利確 {p['tp']:,.0f} ({_pct(p['tp'], p['close']):+.1%}) / "
                  f"損切 {p['sl']:,.0f} ({_pct(p['sl'], p['close']):+.1%}) / 最長{p.get('horizon', '')}営業日")
         L.append(f"   {p['reasons']}")
@@ -154,7 +231,7 @@ def to_markdown(rep: dict) -> str:
             L.append(f"   需給: {p['flows']}")
     if rep["model"]:
         mo = rep["model"]
-        L += ["", f"AI v{mo['version']}（{mo['edge']}）: 上位推奨の期待値 {mo['top_ret']:+.2%} / 勝率 {mo['top_win']:.0%}"
+        L += ["", f"AI v{mo['version']}（{mo['edge']}）: 上位推奨の期待値 {mo['top_ret']:+.2%} / 先着率 {mo['top_win']:.0%}"
                   f"（全シグナル平均 {mo['base_ret']:+.2%} / {mo['base_win']:.0%}）"]
     if rep["paper"]:
         pt = rep["paper"]
@@ -169,10 +246,22 @@ def to_markdown(rep: dict) -> str:
             L.append(f"  指数（{c['name']}）: {c['value']:,.0f}円（{c['ret']:+.1%}） → 合計 {pt['equity'] + c['value']:,.0f}円")
         L += [f"  ・{e}" for e in pt["events"]]
         L += [("    ・" + x[2:]) if x.startswith("• ") else f"  {x}" for x in _side_lines(pt)]
+    L += answer_lines(rep.get("answers"))
     if rep.get("forward"):
         from .forward import text as fw_text
         L.append(f"全候補の答え合わせ: {fw_text(rep['forward'])}")
     return "\n".join(L)
+
+
+def _prob_text(rep: dict, p: dict, bold: bool = False) -> str:
+    """銘柄ごとの「+2ATR先着率 33%・予想リターン +1.2%」。"""
+    b = "**" if bold else ""
+    out = []
+    if p.get("prob") is not None:
+        out.append(f"{rep.get('prob_name', '先着率')} {b}{p['prob']:.0%}{b}")
+    if p.get("exp_ret") is not None:
+        out.append(f"予想リターン {b}{p['exp_ret']:+.1%}{b}")
+    return "・".join(out)
 
 
 # ---------------------------------------------------------------- Discord（カード表示）
@@ -184,6 +273,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
         description=(f"**{crisis_line(rep)}**\n\n" if crisis_line(rep) else "")
                     + "".join(f"⚠️ **データの遅れ**: {s}\n" for s in rep.get("stale") or [])
                     + f"**{rep['n_scanned']:,}** 銘柄を走査 → シグナル **{rep['n_signals']}** 件"
+                    + (f"\n{rep['prob_note']}" if rep.get("prob_note") else "")
                     + (f"\n🌐 [Webで詳しく見る（チャート・過去の結果）]({url})" if url else ""),
         fields=[
             dict(name="地合い", value=f"**{m['mood']}**", inline=True),
@@ -194,7 +284,7 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
     fields = []
     for p in rep["picks"][:max_picks]:
         mark = MEDALS[p["rank"] - 1] if p["rank"] <= 3 else f"`{p['rank']:>2}`"
-        prob = f"AI勝率 **{p['prob']:.0%}**　" if p["prob"] is not None else ""
+        prob = (_prob_text(rep, p, bold=True) + "　") if p.get("prob") is not None or p.get("exp_ret") is not None else ""
         yahoo = f"https://finance.yahoo.co.jp/quote/{p['code']}.T"
         fields.append(dict(
             name=f"{mark} {p['code']} {p['name']}　{_earn(p)}",
@@ -232,7 +322,8 @@ def discord_payload(rep: dict, max_picks: int = 10) -> dict:
         lines.append(f"**{mo['edge']}**（未知期間で上位推奨の期待値 {mo['top_ret']:+.2%} / 全体平均 {mo['base_ret']:+.2%}・コスト控除前）")
     if rep["live"]:
         lv = rep["live"]
-        lines.append(f"通知した上位5件の答え合わせ: {lv['n']}件 勝率 {lv['win']:.0%} / 平均 {lv['ret']:+.2%}")
+        lines.append(f"通知した上位5件の答え合わせ（共通ルール・コスト前）: {lv['n']}件 先着率 {lv['win']:.0%} / 平均 {lv['ret']:+.2%}")
+    lines += answer_lines(rep.get("answers"))[:12]
     if rep["hot"]:
         lines.append("🔥 最近効いている戦略: " + " / ".join(f"{n}" for n, _ in rep["hot"]))
     if rep.get("forward"):
@@ -251,7 +342,8 @@ def ntfy_text(rep: dict, n: int = 5) -> str:
     L = [f"地合い {m['mood']} / シグナル{rep['n_signals']}件"] + ([crisis_line(rep)] if crisis_line(rep) else []) \
         + [f"⚠️ データの遅れ: {s}" for s in rep.get("stale") or []]
     for p in rep["picks"][:n]:
-        prob = f" AI{p['prob']:.0%}" if p["prob"] is not None else ""
+        prob = f" 先着{p['prob']:.0%}" if p["prob"] is not None else ""
+        prob += f" 予想{p['exp_ret']:+.1%}" if p.get("exp_ret") is not None else ""
         L.append(f"{p['rank']}. {p['code']} {p['name']}｜{p['strategies'][0]}{prob}")
         L.append(f"   {p['close']:,.0f} → 利確{p['tp']:,.0f} / 損切{p['sl']:,.0f} {_earn(p)}")
     if rep["paper"]:

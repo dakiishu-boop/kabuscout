@@ -257,6 +257,14 @@ def bundle_predict(bundle: dict, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarr
     return prob, prob
 
 
+def bundle_exp_ret(bundle: dict, df: pd.DataFrame) -> np.ndarray:
+    """予想リターン: 「実際の売買ルール（戦略ごとの利確・損切・保有日数）での損益 − コスト」を学んだモデル（ret）の予測
+    （複数の種があれば平均。専門モデルは含めない）。表示と記録だけに使い、並び順には使わない（ジャーナル §89）。"""
+    if "models" not in bundle:
+        return np.full(len(df), np.nan)
+    return _parts(bundle["models"], df)["ret"].to_numpy()
+
+
 # ---------------------------------------------------------------- strategy weights
 def strategy_stats(ds: pd.DataFrame, lookback_days: int = 120) -> pd.DataFrame:
     d = ds[ds["complete"]]
@@ -459,12 +467,14 @@ def score(df: pd.DataFrame, bundle: dict | None, weights: dict[str, float]) -> p
     df["rule_score"] = rule_score(df, weights)
     if bundle is not None and len(df):
         df["prob"], df["ai_score"] = bundle_predict(bundle, df)
+        df["exp_ret"] = bundle_exp_ret(bundle, df)
         df["agreement"] = agreement(bundle["models"], df) if "models" in bundle else np.nan
         alpha = ai_weight(bundle["metrics"]) if "daily_top_ret" in bundle.get("metrics", {}) else bundle["alpha"]
         df["final_score"] = alpha * df["ai_score"].rank(pct=True) + (1 - alpha) * df["rule_score"].rank(pct=True)
         df["model_version"] = bundle["version"]
     else:
         df["prob"] = np.nan
+        df["exp_ret"] = np.nan
         df["final_score"] = df["rule_score"].rank(pct=True)
         df["model_version"] = None
     return df.sort_values("final_score", ascending=False)

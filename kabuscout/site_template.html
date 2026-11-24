@@ -237,14 +237,14 @@ function renderToday() {
   </div>`;
   if (s.regime && s.regime.crisis) h += `<div class="banner">⚠️ <b>平常時と違う相場（特例モード）: ${esc(s.regime.event)}</b><br>
     過去の危機局面では値動きの法則が崩れやすく、AIの判断も平常時ほど当てになりません。ペーパートレードの新規買いは1銘柄に絞っています。</div>`;
-  h += `<h2>注目銘柄 TOP${s.picks.length}</h2><div class="grid">`;
+  h += `<h2>注目銘柄 TOP${s.picks.length}</h2>` + (DATA.prob_note ? `<p class="small muted">${esc(DATA.prob_note)}</p>` : "") + `<div class="grid">`;
   for (const p of s.picks) {
     const ew = p.earnings_days != null && p.earnings_days <= 14 ? `<span class="chip warn">⚠ 決算まで${p.earnings_days}日</span>` : "";
     h += `<article class="card pick" id="p-${esc(p.code)}">
       <div class="pick-head">
         <div class="rank ${p.rank <= 3 ? "r" + p.rank : ""}">${p.rank}</div>
         <div class="pname"><b><a href="${yahoo(p.code)}" target="_blank" rel="noopener">${esc(p.name)}</a></b><span class="code">${esc(p.code)}</span></div>
-        ${p.prob != null ? `<div class="prob"><div class="v">${pct0(p.prob)}</div><div class="k">AI勝率予測</div></div>` : ""}
+        ${p.prob != null ? `<div class="prob"><div class="v">${pct0(p.prob)}</div><div class="k">${esc(DATA.prob_name || "先着率")}</div>${p.exp_ret != null ? `<div class="small ${cls(p.exp_ret)}">予想リターン ${pct(p.exp_ret)}</div>` : ""}</div>` : ""}
       </div>
       <div class="chips">${p.strategies.map(t => `<span class="chip">${esc(t)}</span>`).join("")}${ew}</div>
       ${chart(p.code, {tp: p.tp, sl: p.sl})}
@@ -259,7 +259,7 @@ function renderToday() {
     </article>`;
   }
   h += `</div>`;
-  if (s.model) h += `<p class="small muted" style="margin-top:14px">🧠 AI: ${esc(s.model.edge)} ／ 利確・損切は ATR（平均的な1日の値幅）の${DATA.config.tp_atr}倍・${DATA.config.sl_atr}倍、最長${DATA.config.horizon}営業日で判定</p>`;
+  if (s.model) h += `<p class="small muted" style="margin-top:14px">🧠 AI: ${esc(s.model.edge)} ／ 先着率は共通ルール（ATR＝平均的な1日の値幅の${DATA.config.tp_atr}倍・${DATA.config.sl_atr}倍、最長${DATA.config.horizon}営業日）で判定。各銘柄の利確・損切の目安は戦略ごとのルール</p>`;
   el.innerHTML = h;
 }
 
@@ -273,10 +273,10 @@ function renderHistory() {
   const done = DATA.signals.filter(r => r.labeled && r.rank <= 5);
   let h = `<div class="kpis">
     <div class="card kpi"><div class="k">答え合わせ済み（上位5件）</div><div class="v">${done.length}件</div></div>
-    <div class="card kpi"><div class="k">勝率</div><div class="v">${done.length ? pct0(done.filter(r => r.label === 1).length / done.length) : "-"}</div><div class="s">利確ラインに先に到達した割合</div></div>
-    <div class="card kpi"><div class="k">平均リターン</div><div class="v ${cls(avg(done))}">${done.length ? pct(avg(done), 2) : "-"}</div><div class="s">1回あたり</div></div>
-    <div class="card kpi"><div class="k">判定方法</div><div class="v" style="font-size:14px">翌寄付で買い</div><div class="s">利確/損切/${DATA.config.horizon}日経過で決着</div></div>
-  </div><h2>日別の候補</h2>`;
+    <div class="card kpi"><div class="k">${esc(DATA.prob_name || "先着率")}の実際</div><div class="v">${done.length ? pct0(done.filter(r => r.label === 1).length / done.length) : "-"}</div><div class="s">共通ルールで +${DATA.config.tp_atr}ATR が先に来た割合</div></div>
+    <div class="card kpi"><div class="k">平均リターン（共通ルール）</div><div class="v ${cls(avg(done))}">${done.length ? pct(avg(done), 2) : "-"}</div><div class="s">1回あたり・コスト前</div></div>
+    <div class="card kpi"><div class="k">判定方法</div><div class="v" style="font-size:14px">翌寄付で買い</div><div class="s">共通ルール: 利確/損切/${DATA.config.horizon}日経過で決着</div></div>
+  </div>` + answersHtml(DATA.answers) + `<h2>日別の候補</h2>`;
   dates.forEach((d, i) => {
     const rows = by[d], lab = rows.filter(r => r.labeled), s = sumBy[d];
     const wins = lab.filter(r => r.label === 1).length;
@@ -284,7 +284,7 @@ function renderHistory() {
       ${s ? `<span class="pill mood-${s.market.mood}">${s.market.mood}</span>` : ""}
       <span class="muted small">${rows.length}銘柄</span>
       <span class="small" style="margin-left:auto">${lab.length ? `判定済 ${lab.length}件・勝ち ${wins}件・平均 <span class="${cls(avg(lab))}">${pct(avg(lab), 2)}</span>` : `<span class="muted">結果待ち</span>`}</span>
-      </summary><div class="tbl"><table><thead><tr><th>#</th><th>銘柄</th><th class="hide-sm">戦略</th><th class="num">AI</th><th class="num hide-sm">終値</th><th>結果</th></tr></thead><tbody>`;
+      </summary><div class="tbl"><table><thead><tr><th>#</th><th>銘柄</th><th class="hide-sm">戦略</th><th class="num">先着率</th><th class="num hide-sm">終値</th><th>結果</th></tr></thead><tbody>`;
     for (const r of rows) {
       const res = r.labeled ? `<span class="${r.label === 1 ? "res-win" : "res-lose"}">${r.label === 1 ? "✅ 利確" : r.ret > 0 ? "△ 期限" : "❌"} ${pct(r.ret)}</span><span class="muted small"> ${r.exit_days}日</span>` : `<span class="muted">判定中</span>`;
       h += `<tr><td>${r.rank}</td><td><a href="${yahoo(r.code)}" target="_blank" rel="noopener">${esc(r.code)} ${esc(r.name)}</a></td>
@@ -296,6 +296,21 @@ function renderHistory() {
   el.innerHTML = h;
 }
 const avg = a => a.length ? a.reduce((x, r) => x + r.ret, 0) / a.length : null;
+// 実際の売買ルールでの答え合わせ・先着率の当たり具合（ジャーナル §89）
+function answersHtml(a) {
+  if (!a || !((a.strategies || []).length || (a.calib || []).length)) return "";
+  let h = `<h2>実際の売買ルールでの答え合わせ</h2><p class="small muted">勝ち＝利確が先に来た割合。平均は期限切れ込みの1回あたりの損益からコスト${pct(a.cost)}を引いた値（予想リターンと同じ基準）。
+    決着していない分は集計に入れていません。${a.min_n}件未満は参考値です。</p>
+    <div class="card tbl"><table><thead><tr><th>戦略</th><th class="hide-sm">売買ルール</th><th class="num">決着</th><th class="num">勝率</th><th class="num">平均</th><th class="num">未決着</th></tr></thead><tbody>` +
+    a.strategies.map(r => `<tr><td>${esc(r.name)}${r.n && r.ref ? ` <span class="muted small">参考値</span>` : ""}</td><td class="small hide-sm">${esc(r.rule)}</td>
+      <td class="num">${r.n}件</td><td class="num">${r.n ? pct0(r.win) : "-"}</td><td class="num ${cls(r.avg)}">${r.n ? pct(r.avg, 2) : "-"}</td><td class="num">${r.pending}件</td></tr>`).join("") +
+    `</tbody></table></div>`;
+  if (a.exp) h += `<p class="small">予想リターンと実績（同じ${a.exp.n}件）: 予想 <b>${pct(a.exp.pred, 2)}</b> ／ 実績 <b class="${cls(a.exp.actual)}">${pct(a.exp.actual, 2)}</b>${a.exp.n < a.min_n ? `（参考値）` : ""}</p>`;
+  if ((a.calib || []).length) h += `<h2>先着率の当たり具合</h2><p class="small muted">予測した${esc(DATA.prob_name || "先着率")}の帯ごとに、共通ルールで実際に +${DATA.config.tp_atr}ATR が先に来た割合。予測と実際が近いほど、確率として信用できます。</p>
+    <div class="card tbl"><table><thead><tr><th>予測の帯</th><th class="num">件数</th><th class="num">予測の平均</th><th class="num">実際</th></tr></thead><tbody>` +
+    a.calib.map(c => `<tr><td>${pct0(c.lo)}〜${pct0(c.hi)}</td><td class="num">${c.n}件</td><td class="num">${pct0(c.pred)}</td><td class="num">${pct0(c.actual)}</td></tr>`).join("") + `</tbody></table></div>`;
+  return h;
+}
 
 // ---------------------------------------------------------------- ペーパートレード
 function renderPaper() {
@@ -443,13 +458,13 @@ function renderAI() {
   const edge = lift >= 0.005 ? "優位性あり" : lift > 0 ? "わずかに優位" : "まだ優位性なし";
   let h = `<div class="kpis">
     <div class="card kpi"><div class="k">AIの実力</div><div class="v" style="font-size:17px">${edge}</div><div class="s">並べ方: ${lift > 0 ? "AIの評価だけ" : "AIとルールを半々（AIが直近で不調のため）"}</div></div>
-    <div class="card kpi"><div class="k">上位推奨の勝率</div><div class="v">${pct0(m.daily_top_win)}</div><div class="s">全シグナル平均 ${pct0(m.base_win)}</div></div>
+    <div class="card kpi"><div class="k">上位推奨の${esc(DATA.prob_name || "先着率")}</div><div class="v">${pct0(m.daily_top_win)}</div><div class="s">全シグナル平均 ${pct0(m.base_win)}</div></div>
     <div class="card kpi"><div class="k">上位推奨の期待値（コスト控除前）</div><div class="v ${cls(m.daily_top_ret)}">${pct(m.daily_top_ret, 2)}</div><div class="s">全シグナル平均 ${pct(m.base_ret, 2)}</div></div>
     <div class="card kpi"><div class="k">学習データ</div><div class="v">${(act.n_train || 0).toLocaleString()}件</div><div class="s">モデル v${esc(act.version)}</div></div>
   </div>
   <p class="small muted">成績は「学習に使っていない期間（${esc(m.holdout_from || "")}〜）」で測ったもの（取引コスト控除前。0.2%/往復を引くと研究ループの数字と同じ基準）。5営業日ごとに再学習し、新旧モデルを未知の期間で対決させて勝った方を採用しています。判定: ${esc(m.verdict || "")}</p>
   ${m.targets ? `<p class="small muted">AIは3つの見方で学習し、その日の候補の中での順位を平均して並べています: ①勝ちやすさ（利確ラインに先に届くか） ②実際に使う売買ルールでの手取りリターン ③その日の候補の中での順位。
-    1つだけで学ぶと特定の年に頼った成績になりやすく、平均すると過去ペーパートレードの最大下落が約半分になりました。「AI勝率予測」は①の値です。</p>` : ""}`;
+    1つだけで学ぶと特定の年に頼った成績になりやすく、平均すると過去ペーパートレードの最大下落が約半分になりました。「${esc(DATA.prob_name || "先着率")}」は①の値（共通ルールでの確率。銘柄ごとの利確・損切とは別ルール）、「予想リターン」は②の値（コスト引き）です。</p>` : ""}`;
   if (m.importance && m.importance.length) {
     const mx = Math.max(...m.importance.map(t => t[1]), 1e-9);
     h += `<h2>AIが重視している要素</h2><div class="card pad">` + m.importance.map(([k, v]) =>

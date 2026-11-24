@@ -187,7 +187,7 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     for col in ("margin_ratio", "buy_pct", "sell_pct", "buy_pct_chg5", "short_total", "lending_fee"):
         top[col] = top["code"].map(snap[col]) if col in snap else np.nan
     _store_live(con, top, data_date)
-    _label_live(con, ds)
+    _label_live(con, ds, cfg, store)
 
     event = regimes.event_of([last])[0]
     crisis = bool(event) or float(ind["stress"].iloc[-1].iloc[0]) > 0.5
@@ -382,24 +382,43 @@ def _store_live(con, top: pd.DataFrame, data_date: str) -> None:
     for _, r in top.iterrows():
         con.execute(
             "INSERT INTO signals(date,code,name,strategies,rule_score,prob,final_score,rank,model_version,"
-            "close,atr,tp,sl,reasons,earnings) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "close,atr,tp,sl,reasons,earnings,exp_ret) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (data_date, r["code"], r["name"], r["strategies"], float(r["rule_score"]),
              None if pd.isna(r["prob"]) else float(r["prob"]), float(r["final_score"]), int(r["rank"]),
              r["model_version"], float(r["close"]), float(r["atr"]), float(r["tp"]), float(r["sl"]),
-             r["reasons"], None if pd.isna(r["earnings_days"]) else int(r["earnings_days"])))
+             r["reasons"], None if pd.isna(r["earnings_days"]) else int(r["earnings_days"]),
+             None if pd.isna(r.get("exp_ret", np.nan)) else float(r["exp_ret"])))
     con.commit()
 
 
-def _label_live(con, ds: pd.DataFrame) -> None:
-    """過去に通知した候補の答え合わせ。"""
+def _label_live(con, ds: pd.DataFrame, cfg: dict | None = None, store=None) -> None:
+    """過去に通知した候補の答え合わせ。label・ret は共通ルール（10日・+2ATR/−1ATR、コスト前）での結果で、+2ATR先着率の当たり具合の確認用。
+    cfg があれば、実際の売買ルール（戦略ごとの利確・損切・保有日数）での結果も label_plan・ret_plan（コスト前）・exit_plan に残す（ジャーナル §89）。"""
     pend = pd.read_sql("SELECT date, code FROM signals WHERE labeled=0", con)
-    if pend.empty:
+    if not pend.empty:
+        d = ds[ds["complete"]].assign(date=lambda x: x["date"].dt.strftime("%Y-%m-%d"))
+        m = pend.merge(d[["date", "code", "label", "ret", "exit_days"]], on=["date", "code"])
+        con.executemany("UPDATE signals SET label=?, ret=?, exit_days=?, labeled=1 WHERE date=? AND code=?",
+                        [(int(r.label), float(r.ret), int(r.exit_days), r.date, r.code) for r in m.itertuples()])
+        con.commit()
+    if cfg is None:
         return
-    d = ds[ds["complete"]].assign(date=lambda x: x["date"].dt.strftime("%Y-%m-%d"))
-    m = pend.merge(d[["date", "code", "label", "ret", "exit_days"]], on=["date", "code"])
-    con.executemany("UPDATE signals SET label=?, ret=?, exit_days=?, labeled=1 WHERE date=? AND code=?",
-                    [(int(r.label), float(r.ret), int(r.exit_days), r.date, r.code) for r in m.itertuples()])
-    con.commit()
+    try:  # 表示用の記録だけ。失敗しても本番は続ける
+        pend = pd.read_sql("SELECT date, code FROM signals WHERE COALESCE(labeled_plan, 0)=0", con)
+        if pend.empty:
+            return
+        cols = ["date", "code", "strategies", "atr", "ret", "label", "exit_days", "complete"]
+        d = ds[cols].assign(date=lambda x: x["date"].dt.strftime("%Y-%m-%d")).merge(pend, on=["date", "code"])
+        if d.empty:
+            return
+        d = learner.with_plan_outcomes(d.assign(date=pd.to_datetime(d["date"])).reset_index(drop=True), cfg, store)
+        d = d[d["complete_plan"]]
+        con.executemany("UPDATE signals SET label_plan=?, ret_plan=?, exit_plan=?, labeled_plan=1 WHERE date=? AND code=?",
+                        [(int(r.label_plan), float(r.ret_plan), int(r.exit_plan), r.date.strftime("%Y-%m-%d"), r.code)
+                         for r in d.itertuples()])
+        con.commit()
+    except Exception as e:
+        log.warning("実際の売買ルールでの答え合わせに失敗（本番は続行）: %s", e)
 
 
 def _rev_account(cfg: dict, con, ind: dict, pl: pd.DataFrame, last: pd.Timestamp, excluded: set, bundle, weights: dict,

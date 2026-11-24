@@ -8,6 +8,10 @@ on:
     # 15:53 JST。GitHub の定時実行は混む時刻（毎時0分・30分・45分など）に大きく遅れやすい（2026-10-22 は45分遅れ）ので、
     # 空いていそうな時刻にする。Yahooのデータの確定（15:55頃）までは自動で待つ
     - cron: "53 6 * * 1-5"
+    # 予備（2026-11-24 に GitHub が定時実行を丸ごと飛ばした）: 18:23 と 20:43 JST にもう一度起動する。
+    # その日の 15:30 以降に成功した実行があれば、下の check ジョブが何もせずに終わる（二重の実行・通知はしない）
+    - cron: "23 9 * * 1-5"
+    - cron: "43 11 * * 1-5"
   workflow_dispatch:
     inputs:
       args:
@@ -35,7 +39,29 @@ permissions:
   id-token: write
 
 jobs:
+  # 定時実行のときだけ: 今日（日本時間）の 15:30 以降に、この処理がもう成功していたら残りを飛ばす。
+  # concurrency で前の実行が終わるまで待ってから確かめるので、本番の実行と予備が同時に走ることはない。手動の実行はいつも動く
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.done.outputs.skip }}
+    steps:
+      - id: done
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          since=$(date -u -d "TZ=\"Asia/Tokyo\" $(TZ=Asia/Tokyo date +%F) 15:30" +%Y-%m-%dT%H:%M:%SZ)
+          n=$(gh api "repos/${{ github.repository }}/actions/workflows/daily.yml/runs?status=success&created=>=${since}&per_page=50" \
+                --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length')
+          echo "今日 ${since} 以降に成功した実行: ${n} 回"
+          if [ "${n}" -gt 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
+
   screen:
+    needs: check
+    if: ${{ needs.check.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     env:
       HAS_BACKUP_KEY: ${{ secrets.BACKUP_DEPLOY_KEY != '' }}   # バックアップ用の鍵が登録されているか（docs/RESTORE.md）

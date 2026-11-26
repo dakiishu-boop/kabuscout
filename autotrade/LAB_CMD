@@ -1,2 +1,3 @@
-python -m autotrade.lab research --horizons 5 --suite v4 --chosen '{"n_hold":5,"rebalance_every":5,"keep_rank":30,"depth":25,"regime_ma":75,"regime_scale":0.5}'
+pip install -q pytest==8.3.3
+python -m pytest -q
 python -m autotrade.lab live

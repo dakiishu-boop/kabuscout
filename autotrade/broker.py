@@ -46,6 +46,7 @@ class Fill:
     reason: str = ""
     pnl: float | None = None
     net: float | None = None  # 売りの損益率（コスト込み）
+    entry_date: str | None = None  # 売りのとき: その保有を買った日
 
 
 class Broker:
@@ -132,7 +133,7 @@ class PaperBroker(Broker):
             fill_px = px * (1 - self.half)
             self._cash += n * fill_px
             pnl = n * (fill_px - p.entry_px)
-            f = Fill(date, o.code, "sell", n, fill_px, px, o.reason, pnl, fill_px / p.entry_px - 1)
+            f = Fill(date, o.code, "sell", n, fill_px, px, o.reason, pnl, fill_px / p.entry_px - 1, p.entry_date)
             self.fills.append(f)
             done.append(f)
             p.shares -= n
@@ -159,6 +160,19 @@ class PaperBroker(Broker):
             done.append(f)
         self._pending = keep
         return done
+
+    def force_sell(self, date: str, code: str, px: float, reason: str) -> Fill | None:
+        """値段が途切れた保有（上場廃止など）を、その値段で売ったものとして現金にする（注文を通さない）。"""
+        p = self._pos.pop(code, None)
+        if p is None:
+            return None
+        fill_px = px * (1 - self.half)
+        self._cash += p.shares * fill_px
+        f = Fill(date, code, "sell", p.shares, fill_px, px, reason, p.shares * (fill_px - p.entry_px), fill_px / p.entry_px - 1,
+                 p.entry_date)
+        self.fills.append(f)
+        self._pending = [o for o in self._pending if o.code != code]
+        return f
 
     def add_dividends(self, per_share: dict[str, float], tax: float = 0.20315) -> float:
         """権利落ち日に、保有株数 × 1株配当（税引き後）を現金に入れる。"""

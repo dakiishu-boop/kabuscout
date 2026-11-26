@@ -53,6 +53,12 @@ def build(cfg: dict, horizons=(5, 10, 20), uni: Universe = Universe(), start: st
           with_events: bool = True):
     """返す: (ds 縦長の学習表, market バックテスト用, masks)。"""
     px, mkt, fac, splits, div = load_panel(cfg, start)
+    return build_core(cfg, px, mkt, fac, splits, div, horizons, uni, with_events)
+
+
+def build_core(cfg: dict, px: dict, mkt: pd.Series, fac: pd.DataFrame, splits, div, horizons=(5,),
+               uni: Universe = Universe(), with_events: bool = True):
+    """値段の表（日付×銘柄）から学習表とバックテスト用の表を作る（上場廃止銘柄を足した検証にも使う）。"""
     o, h, l, c, v = (px[k] for k in ("open", "high", "low", "close", "volume"))
     log.info("株価: %d日 × %d銘柄（%s〜%s）", *c.shape, c.index[0].date(), c.index[-1].date())
     feats = F.price_features(o, h, l, c, v, mkt, sectors(cfg), div)
@@ -82,7 +88,8 @@ def build(cfg: dict, horizons=(5, 10, 20), uni: Universe = Universe(), start: st
     market = Market(cal=c.index, codes=list(c.columns), open=(o * fac).to_numpy("float64"),
                     close=raw_c.ffill(limit=5).to_numpy("float64"),
                     splits=(splits.to_numpy("float64") if splits is not None else np.ones(c.shape)),
-                    div=(div * fac).to_numpy("float64") if div is not None else None, weak=ma[200], weak_ma=ma)
+                    div=(div * fac).to_numpy("float64") if div is not None else None, weak=ma[200], weak_ma=ma,
+                    high=(h * fac).to_numpy("float32"), low=(l * fac).to_numpy("float32"), volume=v.to_numpy("float32"))
     return ds, market, dict(ma=ma, ii=ii, jj=jj, shape=c.shape, mkt=mkt)
 
 

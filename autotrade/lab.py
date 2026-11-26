@@ -57,6 +57,9 @@ def main(argv: list[str]) -> None:
     cmd = argv[0] if argv else "probe"
     if cmd == "probe":
         probe()
+    elif cmd == "verify":
+        from . import verify
+        verify.main(argv[1:])
     elif cmd == "live":
         # 本番のデータで毎日の運用を1回通す（通知なし。このジョブの中だけの口座で、どこにも保存しない）
         import time

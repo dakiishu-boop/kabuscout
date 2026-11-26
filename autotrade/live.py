@@ -129,6 +129,14 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
         for f in b.execute_open(d, _Row(market.open[i], cix)):
             events.append(f"{d} 約定 {f.side} {f.code} {f.shares}株 @{f.raw_px:,.1f}" +
                           (f" 損益 {f.pnl:+,.0f}円（{f.net:+.1%}）{f.reason}" if f.side == "sell" else f" {f.reason}"))
+        lc = st.setdefault("last_close", {})
+        for c in list(b.positions()):
+            v = market.close[i, cix[c]] if c in cix else float("nan")
+            if v == v:
+                lc[c] = float(v)
+            elif c in lc:  # 6営業日以上値段が無い（上場廃止など）: 最後の終値で現金にする（バックテストと同じ）
+                f = b.force_sell(d, c, lc.pop(c), "値段の途切れ（上場廃止など）")
+                events.append(f"{d} {c} を最後の終値 {f.raw_px:,.1f} で現金化（値段の途切れ）")
         eq = b.mark(_Row(market.close[i], cix))
         st["equity"].append([d, round(eq)])
         st["peak"] = max(st["peak"], eq)

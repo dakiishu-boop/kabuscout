@@ -41,6 +41,9 @@ class Market:
     div: np.ndarray | None  # T×N 実際の1株配当（権利落ち日）
     weak: np.ndarray        # T 地合いが弱い日（日経平均が200日線の下）
     weak_ma: dict | None = None  # {移動平均の日数: T の弱い日}（Params.regime_ma で選ぶ）
+    high: np.ndarray | None = None    # T×N（約定できたかの判定・取引の点検に使う）
+    low: np.ndarray | None = None
+    volume: np.ndarray | None = None
 
 
 # 上場企業の倒産件数（年）。生存者バイアスの検証で、保有中の銘柄が倒産する確率の目安に使う。
@@ -51,10 +54,17 @@ LISTED = 3600
 
 def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, capital: float = 1_000_000,
         start: str | None = None, end: str | None = None, dividends: bool = False,
-        crash_mult: float = 0.0, seed: int = 0) -> dict:
+        crash_mult: float = 0.0, seed: int = 0, realistic_fills: bool = False,
+        lot_schedule: list | None = None) -> dict:
     """scores: T×N の点数（NaN = 点数なし）。eligible: T×N の新規に買ってよいか。
     crash_mult > 0: 生存者バイアスの検証。保有中の銘柄が1日あたり「その年の倒産率 × crash_mult ÷ 250」の確率で
-    倒産したとみなし、その日の終値の5%で翌朝売る（実際のデータには倒産した銘柄が無いため）。"""
+    倒産したとみなし、その日の終値の5%で翌朝売る（実際のデータには倒産した銘柄が無いため）。
+    realistic_fills: 出来高0の日・高値と安値が同じ日（ストップ高・安の張り付きなど）は寄付で売買できないとみなす
+    （買いは取り消し、売りは翌日に回す）。
+    lot_schedule: [(この日より前, 単元株数), ...]。例 [("2018-10-01", 1000)] = 2018年10月より前は全銘柄1,000株単位。
+    値段が6営業日以上途切れた保有（上場廃止など）は、最後の終値で売ったものとして現金にする。"""
+    from .broker import Order
+    from dataclasses import replace as _replace
     rng = np.random.default_rng(seed)
     crashed: dict[str, float] = {}
     cal = market.cal
@@ -65,8 +75,16 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     curve, expo = [], []
     since_reb = 10 ** 9
     weak = (market.weak_ma or {}).get(p.regime_ma, market.weak) if p.regime_ma else np.zeros(len(cal), dtype=bool)
+    blocked = None
+    if realistic_fills and market.volume is not None:
+        blocked = (market.volume <= 0) | (market.high <= market.low)
+    last_close: dict[str, float] = {}
+    sched = sorted((pd.Timestamp(x), int(n)) for x, n in (lot_schedule or []))
     for i in range(i0, i1):
         d = cal[i].strftime("%Y-%m-%d")
+        lot = next((n for x, n in sched if cal[i] < x), p.lot)
+        pi = p if lot == p.lot else _replace(p, lot=lot)
+        b.lot = lot
         sp = market.splits[i]
         if b.positions() or b.open_orders():
             ratios = {c: float(sp[cix[c]]) for c in {*b.positions(), *(o.code for o in b.open_orders())}
@@ -74,8 +92,12 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
             if ratios:
                 b.apply_splits(ratios)
         orow = _Row(market.open[i], cix)
-        if crashed:  # 倒産した銘柄は、倒産後の値段（最後の終値の5%）でしか売れない
+        if blocked is not None and b.open_orders():
             arr = market.open[i].copy()
+            arr[blocked[i]] = np.nan
+            orow = _Row(arr, cix)
+        if crashed:  # 倒産した銘柄は、倒産後の値段（最後の終値の5%）でしか売れない
+            arr = orow.arr.copy()
             for c, v in crashed.items():
                 arr[cix[c]] = v
             orow = _Row(arr, cix)
@@ -95,6 +117,12 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
             for c, v in crashed.items():
                 carr[cix[c]] = v
         crow = _Row(carr, cix)
+        for c in list(b.positions()):
+            v = carr[cix[c]]
+            if v == v:
+                last_close[c] = float(v)
+            elif c in last_close:  # 6営業日以上値段が無い = 上場廃止など。最後の終値で現金にする
+                b.force_sell(d, c, last_close.pop(c), "値段の途切れ（上場廃止など）")
         eq = b.mark(crow)
         curve.append((cal[i], eq))
         expo.append(1 - b.cash() / eq if eq > 0 else 0.0)
@@ -114,17 +142,17 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
         else:
             sc = {c: 0.0 for c in b.positions()}
             el = set()
-        orders = decide(b, sc, el, crow, reb, bool(weak[i]), p)
+        orders = decide(b, sc, el, crow, reb, bool(weak[i]), pi)
         if crashed:  # 倒産した銘柄は、入れ替え日でなくても翌朝売る（倒産後の値段で）
             have = {o.code for o in orders}
-            from .broker import Order
             orders += [Order(c, "sell", b.positions()[c].shares, v, "倒産（検証）") for c, v in crashed.items()
                        if c not in have]
         b.submit(orders)
     eqs = pd.Series(dict(curve))
     sells = [f for f in b.fills if f.side == "sell"]
-    tr = pd.DataFrame([dict(date=pd.Timestamp(f.date), net=f.net, pnl=f.pnl, code=f.code, reason=f.reason) for f in sells],
-                      columns=["date", "net", "pnl", "code", "reason"])
+    tr = pd.DataFrame([dict(date=pd.Timestamp(f.date), net=f.net, pnl=f.pnl, code=f.code, reason=f.reason,
+                            entry_date=pd.Timestamp(f.entry_date) if f.entry_date else pd.NaT, shares=f.shares, px=f.raw_px)
+                       for f in sells], columns=["date", "net", "pnl", "code", "reason", "entry_date", "shares", "px"])
     return dict(equity=eqs, trades=tr, exposure=pd.Series(expo, index=eqs.index), broker=b)
 
 

@@ -310,3 +310,39 @@ def test_live_skips_and_sells_delisting_risk(cfg, synth):
     sells = {x["code"]: x["reason"] for x in r3["orders"] if x["side"] == "sell"}
     assert sells.get(first) == "監理・整理銘柄"
     assert all(x["code"] not in (first, "1039") for x in r3["orders"] if x["side"] == "buy")
+
+
+def _mk_market(c, o, **kw):
+    T, N = c.shape
+    return sim.Market(cal=c.index, codes=list(c.columns), open=o.to_numpy(), close=c.to_numpy(),
+                      splits=np.ones((T, N)), div=None, weak=np.zeros(T, dtype=bool), **kw)
+
+
+def test_locked_days_are_not_tradable_and_lot_schedule(synth):
+    o, h, l, c, v, mkt = synth
+    T, N = c.shape
+    S = np.random.default_rng(5).random((T, N))
+    p = Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20)
+    hi, lo, vol = h.to_numpy(), l.to_numpy(), v.to_numpy().copy()
+    vol[:, :20] = 0  # 半分の銘柄は売買が一度も成立しない
+    m = _mk_market(c, o, high=hi, low=lo, volume=vol)
+    res = sim.run(m, S, np.ones((T, N), bool), p, realistic_fills=True)
+    bought = {f.code for f in res["broker"].fills if f.side == "buy"}
+    assert bought and not (bought & set(c.columns[:20]))
+    big = sim.run(m, S, np.ones((T, N), bool), p, lot_schedule=[("2099-01-01", 1000)])
+    assert all(f.shares % 1000 == 0 for f in big["broker"].fills if f.side == "buy")
+
+
+def test_position_with_vanished_prices_is_cashed_out(synth):
+    o, h, l, c, v, mkt = synth
+    c2, o2 = c.copy(), o.copy()
+    c2.iloc[400:, :] = np.nan  # 全銘柄が400日目で上場廃止
+    o2.iloc[400:, :] = np.nan
+    T, N = c.shape
+    S = np.random.default_rng(1).random((T, N))
+    m = _mk_market(c2.ffill(limit=5), o2)
+    res = sim.run(m, S, np.ones((T, N), bool), Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20))
+    b = res["broker"]
+    assert b.positions() == {}
+    assert (res["trades"]["reason"] == "値段の途切れ（上場廃止など）").sum() >= 1
+    assert res["trades"]["entry_date"].notna().all()

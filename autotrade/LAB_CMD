@@ -1,1 +1,1 @@
-python -m autotrade.lab improve
+python -m autotrade.lab improve --confirm '{"rebalance_every":1,"keep_rank":50}'

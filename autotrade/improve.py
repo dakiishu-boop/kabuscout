@@ -79,6 +79,31 @@ def judge(name: str, cand: list[dict], frozen: list[dict]) -> bool:
     return ok
 
 
+def confirm(market, S, elig, p0: Params, p1: Params) -> bool:
+    """凍結した版と候補を同じ条件で並べる。採用の条件（実行前に docs/AUTOTRADE.md に書いたもの）:
+    すべての行で、2019年以降のシャープ比か年率のどちらかが候補の方が高いこと。"""
+    Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
+    rows = [("base", S, {}, {}), ("cost0.3%", S, {"cost": 0.003}, {}), ("cost0.5%", S, {"cost": 0.005}, {}),
+            ("delay1", Sd, {}, {}), ("realfills", S, {}, {"realistic_fills": True}),
+            ("lot1000<2018-10", S, {}, {"lot_schedule": [("2018-10-01", 1000)]}),
+            ("bounded3M", S, {}, {"withdraw_above": 3_000_000}), ("bounded10M", S, {}, {"withdraw_above": 10_000_000}),
+            ("adv3%", S, {"max_adv_frac": 0.03}, {}),
+            ("bounded3M+cost0.5%+realfills", S, {"cost": 0.005}, {"withdraw_above": 3_000_000, "realistic_fills": True})]
+    ok_all = True
+    for name, Sx, pk, rk in rows:
+        rf = sim.run(market, Sx, elig, replace(p0, **pk), start="2008-01-01", **rk)
+        rc = sim.run(market, Sx, elig, replace(p1, **pk), start="2008-01-01", **rk)
+        f19, c19 = sim.stats(rf, HOLDOUT), sim.stats(rc, HOLDOUT)
+        fa, ca = sim.stats(rf), sim.stats(rc)
+        win = c19["sharpe"] > f19["sharpe"] or c19["cagr"] > f19["cagr"]
+        ok_all &= win
+        print(f"CONFIRM {name:30s} {'cand wins' if win else 'CAND LOSES'}")
+        print(f"   frozen 2019+ {_fmt(f19)} | all CAGR {fa['cagr']*100:+.1f}% MDD {fa['max_dd']*100:.1f}% Sharpe {fa['sharpe']:.2f}")
+        print(f"   cand   2019+ {_fmt(c19)} | all CAGR {ca['cagr']*100:+.1f}% MDD {ca['max_dd']*100:.1f}% Sharpe {ca['sharpe']:.2f}")
+    print(f"CONFIRM RESULT: {'ADOPT' if ok_all else 'KEEP FROZEN'}")
+    return ok_all
+
+
 def main(argv: list[str]) -> None:
     import argparse
     import warnings
@@ -89,6 +114,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model-params", default="")
     ap.add_argument("--only", default="A,B,C")
+    ap.add_argument("--confirm", default="", help='候補の Params の差分（JSON）。凍結した版と同じ条件で並べて確認する')
     a = ap.parse_args(argv)
     only = set(a.only.split(","))
     from kabuscout.config import load_config
@@ -116,6 +142,10 @@ def main(argv: list[str]) -> None:
         return [sim.run(market, S, elig, p, start="2008-01-01") for S in Sl]
 
     S5 = scores(5)
+    if a.confirm:
+        confirm(market, S5[0], elig, p0, replace(p0, **json.loads(a.confirm)))
+        print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")
+        return
     frozen = runs(S5, p0)
     print(f"FROZEN {json.dumps(p0.to_dict())} ({time.time() - t0:.0f}s)")
     print(f"   design {_fmt(summary(frozen[0])['design'])}")

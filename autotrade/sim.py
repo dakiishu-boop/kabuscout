@@ -65,7 +65,8 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     lot_schedule: [(この日より前, 単元株数), ...]。例 [("2018-10-01", 1000)] = 2018年10月より前は全銘柄1,000株単位。
     値段が6営業日以上途切れた保有（上場廃止など）は、最後の終値で売ったものとして現金にする。
     withdraw_above: 毎年の最終営業日に、資産がこの額を超えていれば超えた分の現金を引き出す（利息0で別に持つ）。
-    1注文の大きさを抑えた（複利で口座が巨大にならない）場合の成績を見るため。資産の推移は「口座＋引き出した分」。"""
+    1注文の大きさを抑えた（複利で口座が巨大にならない）場合の成績を見るため。資産の推移は口座そのものの損益率をつないだもの
+    （引き出した現金は含めない。含めると利息0の現金で成績が薄まる）。"""
     from .broker import Order
     from dataclasses import replace as _replace
     rng = np.random.default_rng(seed)
@@ -82,7 +83,7 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     if realistic_fills and market.volume is not None:
         blocked = (market.volume <= 0) | (market.high <= market.low)
     last_close: dict[str, float] = {}
-    withdrawn = 0.0
+    idx, prev_eq = 1.0, float(capital)
     sched = sorted((pd.Timestamp(x), int(n)) for x, n in (lot_schedule or []))
     for i in range(i0, i1):
         d = cal[i].strftime("%Y-%m-%d")
@@ -128,12 +129,16 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
             elif c in last_close:  # 6営業日以上値段が無い = 上場廃止など。最後の終値で現金にする
                 b.force_sell(d, c, last_close.pop(c), "値段の途切れ（上場廃止など）")
         eq = b.mark(crow)
-        if withdraw_above and (i + 1 >= len(cal) or cal[i + 1].year != cal[i].year) and eq > withdraw_above:
-            take = min(b.cash(), eq - withdraw_above)
-            b._cash -= take
-            withdrawn += take
-            eq -= take
-        curve.append((cal[i], eq + withdrawn))
+        rec = eq
+        if withdraw_above:  # 口座そのものの損益率をつなぐ（引き出した現金は成績に入れない＝時間加重の収益率）
+            idx *= eq / prev_eq if prev_eq > 0 else 1.0
+            rec = idx * capital
+            if (i + 1 >= len(cal) or cal[i + 1].year != cal[i].year) and eq > withdraw_above:
+                take = min(b.cash(), eq - withdraw_above)
+                b._cash -= take
+                eq -= take
+            prev_eq = eq
+        curve.append((cal[i], rec))
         expo.append(1 - b.cash() / eq if eq > 0 else 0.0)
         if i + 1 >= i1:
             break

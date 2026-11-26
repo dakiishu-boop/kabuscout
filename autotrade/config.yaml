@@ -3,13 +3,13 @@
 account:
   capital: 1000000        # kabuscout の比較と同じ100万円
 strategy:
-  n_hold: 8               # 同時に持つ銘柄数
+  n_hold: 5               # 同時に持つ銘柄数
   rebalance_every: 5      # 何営業日ごとに入れ替えるか
-  keep_rank: 48           # 持っている銘柄は、この順位以内なら持ち続ける
-  depth: 40               # 新規に買う候補を何位まで見るか
+  keep_rank: 30           # 持っている銘柄は、この順位以内なら持ち続ける
+  depth: 25               # 新規に買う候補を何位まで見るか
   stop_loss: 0.0          # 損切は使わない（研究では成績が下がった）
   regime_ma: 75           # 日経平均が75日線を下回ったら…
-  regime_scale: 0.5       # …持つ数を半分（8 → 4銘柄）にする
+  regime_scale: 0.5       # …持つ数を半分にする（5 × 0.5 = 2.5 → Python の丸めで2銘柄）
   lot: 100
   cost: 0.002
 model:

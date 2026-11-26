@@ -1,1 +1,2 @@
-research --horizons 5 --suite v4
+python -m autotrade.lab research --horizons 5 --suite v4 --chosen '{"n_hold":5,"rebalance_every":5,"keep_rank":30,"depth":25,"regime_ma":75,"regime_scale":0.5}'
+python -m autotrade.lab live

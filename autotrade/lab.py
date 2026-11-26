@@ -57,6 +57,16 @@ def main(argv: list[str]) -> None:
     cmd = argv[0] if argv else "probe"
     if cmd == "probe":
         probe()
+    elif cmd == "live":
+        # 本番のデータで毎日の運用を1回通す（通知なし。このジョブの中だけの口座で、どこにも保存しない）
+        import time
+        from . import __main__ as cli
+        t0 = time.time()
+        cli.main(["daily", "--no-notify"])
+        print(f"LIVE daily (with training) {time.time() - t0:.0f}s")
+        t0 = time.time()
+        cli.main(["daily", "--no-notify"])
+        print(f"LIVE daily (model cached) {time.time() - t0:.0f}s")
     else:
         from . import research
         research.main(argv)

@@ -200,6 +200,11 @@ def suite_v4(market, S, elig) -> None:
     Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
     run_grid(market, Sd, elig, [p], "ensemble-delay1")
     run_grid(market, S, elig, [Params(**{**d, "cost": c}) for c in (0.003, 0.005)], "ensemble-cost")
+    run_grid(market, S, elig, [p], "ensemble-div", dividends=True)
+    for cap in (3_000_000,):
+        res = sim.run(market, S, elig, p, capital=cap, start="2008-01-01")
+        print(f"CAPITAL {cap:,}: all {_fmt(sim.stats(res))}")
+        print(f"CAPITAL {cap:,}: 2019+ {_fmt(sim.stats(res, HOLDOUT))}")
     for mult in (6,):
         c_all, d_all = [], []
         for sd in range(10):
@@ -241,6 +246,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--model-params", default="")
     ap.add_argument("--suite", default="")
     ap.add_argument("--offsets", default="0")
+    ap.add_argument("--chosen", default="", help="CHOSEN を差し替える Params の JSON")
     a = ap.parse_args(argv)
     from pathlib import Path
     from kabuscout.config import load_config
@@ -263,6 +269,9 @@ def main(argv: list[str]) -> None:
         print(f"WF H={H} done {time.time()-t1:.0f}s")
         diagnostics(ds, col, H)
         preds[H] = col
+    global CHOSEN
+    if a.chosen:
+        CHOSEN = Params(**json.loads(a.chosen))
     if a.suite == "v4":
         H = hs[0]
         S = [D.to_wide(ds, preds[H], masks)]

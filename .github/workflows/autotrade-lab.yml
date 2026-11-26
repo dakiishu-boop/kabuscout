@@ -34,4 +34,4 @@ jobs:
       - name: Lab
         env:
           PYTHONWARNINGS: ignore
-        run: python -m autotrade.lab $(cat autotrade/LAB_CMD)
+        run: bash -e autotrade/LAB_CMD  # 実行する研究の内容（1行に1つのコマンド）

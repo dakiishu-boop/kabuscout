@@ -85,9 +85,10 @@ def _have(p, mem, d):
     return {x for x in m if x in p.close.columns and pd.notna(p.close.at[d, x])} if m is not None else None
 
 
-def targets(cfg: dict, name: str | None = None):
+def targets(cfg: dict, name: str | None = None, data=None):
+    """data=(株価, 構成銘柄) を渡すと読み込まない（過去をたどる試し運転 replay 用）。"""
     name = name or cfg["trading"]["strategy"]
-    p, mem = load(cfg)
+    p, mem = data if data is not None else load(cfg)
     s = signal_date(D.calendar(p))
     strat = _strategy(cfg, name, p, mem, s)
     w = strat(p.upto(s), _have(p, mem, s) if name in NEEDS_MEMBERS else None)
@@ -102,8 +103,9 @@ def screen(cfg: dict, name: str | None = None) -> dict:
             "note": "CASH = 米ドルのまま（米ドルMMF）。BIL = 短期国債の ETF。判定日の次の営業日の寄付で組み直す"}
 
 
-def plan_orders(w: dict, pos: dict, px: dict, equity: float, cfg: dict) -> list[Order]:
-    """目標の比率と今の保有から注文を作る（売りが先）。1株単位、比率のずれが小さい銘柄は売買しない。"""
+def plan_orders(w: dict, pos: dict, px: dict, equity: float, cfg: dict, cash: float | None = None) -> list[Order]:
+    """目標の比率と今の保有から注文を作る（売りが先）。1株単位、比率のずれが小さい銘柄は売買しない。
+    cash を渡すと、売った後の現金で足りない分は買いを同じ割合で減らす（過去の検証 backtest と同じ）。"""
     band = float(cfg["backtest"].get("rebalance_band", 0))
     min_usd = float(cfg["trading"].get("min_order_usd", 0))
     c = cfg["costs"]
@@ -125,16 +127,31 @@ def plan_orders(w: dict, pos: dict, px: dict, equity: float, cfg: dict) -> list[
         if abs(dq) < 1e-9 or (abs(dq) * price < min_usd and w.get(k, 0) > 0):
             continue
         orders.append(Order(k, "buy" if dq > 0 else "sell", abs(dq), price, note="新規" if q0 == 0 else ("全部売る" if tq == 0 else "調整")))
+    if cash is not None:
+        rate = c.get("commission", 0) + c.get("spread", 0)
+        avail = cash + sum(o.value * (1 - rate) for o in orders if o.side == "sell")
+        need = sum(o.value * (1 + rate) for o in orders if o.side == "buy")
+        if need > avail > 0:
+            scale = avail / need
+            for o in orders:
+                if o.side == "buy":
+                    o.qty = float(math.floor(o.qty * scale))
+            orders = [o for o in orders if o.qty > 0]
     return sorted(orders, key=lambda o: o.side != "sell")
 
 
-def checks(cfg: dict, orders: list[Order], w: dict, equity: float, peak: float, p: D.Panel, s: pd.Timestamp) -> tuple[list[str], list[str], list[Order]]:
+def _now(now=None) -> pd.Timestamp:
+    return pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+
+
+def checks(cfg: dict, orders: list[Order], w: dict, equity: float, peak: float, p: D.Panel, s: pd.Timestamp,
+           now=None) -> tuple[list[str], list[str], list[Order]]:
     """安全装置。(止める理由, 注意, 出してよい注文)"""
     t = cfg["trading"]
     blocked, warn = [], []
     if (cfg["data"]["dir"] / "STOP").exists():
         blocked.append(f"緊急停止のファイル {cfg['data']['dir'] / 'STOP'} があります（消すと再開）")
-    age = (pd.Timestamp.now(tz="America/New_York").date() - p.dates[-1].date()).days
+    age = (_now(now).date() - p.dates[-1].date()).days
     if age > int(t.get("max_data_age_days", 4)):
         blocked.append(f"株価データが古い（最終日 {p.dates[-1].date()}、{age}日前）。先に fetch を")
     if equity <= 0:
@@ -161,9 +178,10 @@ def _state_path(cfg):
     return cfg["data"]["dir"] / "trader_state.json"
 
 
-def rebalance(cfg: dict, strategy: str | None = None, broker: str | None = None, execute: bool = False, force: bool = False) -> dict:
-    p, s, name, w, _ = targets(cfg, strategy)
-    br = B.make(cfg, broker)
+def rebalance(cfg: dict, strategy: str | None = None, broker: str | None = None, execute: bool = False, force: bool = False,
+              data=None, now=None, br=None) -> dict:
+    p, s, name, w, _ = targets(cfg, strategy, data)
+    br = br or B.make(cfg, broker)
     fills = br.settle(p) if execute else []
     acct = br.mark(p, save=execute) if hasattr(br, "mark") else br.account()
     pos = br.positions()
@@ -175,9 +193,9 @@ def rebalance(cfg: dict, strategy: str | None = None, broker: str | None = None,
     if st.get(br.name) == str(s.date()) and not force:
         out.update(orders=[], note=f"{s.date()} の判定ではもう注文済み（やり直すなら --force）")
         return out
-    orders = plan_orders(w, pos, px, eq, cfg)
-    blocked, warn, orders = checks(cfg, orders, w, eq, float(acct.get("peak_equity", eq)), p, s)
-    late = len(pd.bdate_range(s, pd.Timestamp.now(tz="America/New_York").tz_localize(None).normalize())) - 2
+    orders = plan_orders(w, pos, px, eq, cfg, cash=acct.get("cash"))
+    blocked, warn, orders = checks(cfg, orders, w, eq, float(acct.get("peak_equity", eq)), p, s, now)
+    late = len(pd.bdate_range(s, _now(now).normalize())) - 2
     if late > 2:
         warn.append(f"判定日 {s.date()} から約{late}営業日たっています（過去の検証は判定日の次の営業日の寄付で組み直す前提）")
     out.update(orders=[o.to_dict() for o in orders], blocked=blocked, warnings=warn)
@@ -197,3 +215,30 @@ def status(cfg: dict, broker: str | None = None) -> dict:
     if br.name == "paper":
         out.update(pending=br.s["pending"], fills=br.s["fills"][-20:], history=br.s["history"][-12:])
     return out
+
+
+def replay(cfg: dict, start: str, end: str | None = None, strategy: str | None = None, data=None) -> dict:
+    """過去をたどる自動売買の試し運転: 毎月の判定日の引けの後に「その日までの株価」だけで rebalance --execute を実行し、
+    次の月の実行で手元のペーパー口座が寄付の値段で約定する。過去の検証（backtest）と同じ結果になるかを確かめる。
+    口座は cfg["data"]["dir"] / "replay" に作る（本物のペーパー口座には触らない）。"""
+    import copy
+    from .broker.paper import PaperBroker
+    p, mem = data if data is not None else load(cfg)
+    c = copy.deepcopy(cfg)
+    c["data"]["dir"] = cfg["data"]["dir"] / "replay"
+    c["data"]["dir"].mkdir(parents=True, exist_ok=True)
+    for f in ("paper_account.json", "trader_state.json"):
+        (c["data"]["dir"] / f).unlink(missing_ok=True)
+    br = PaperBroker(c["data"]["dir"] / "paper_account.json", c)
+    cal = D.calendar(p)
+    me = D.month_ends(cal)
+    me = me[(me >= pd.Timestamp(start)) & (me <= pd.Timestamp(end or cal[-1]))]
+    me = pd.DatetimeIndex([d for d in me if d.date() == last_trading_day(d.year, d.month)])  # 終わっていない月は除く
+    log = []
+    for s in me:
+        res = rebalance(c, strategy, execute=True, data=(p.upto(s), mem), now=s + pd.Timedelta(hours=20), br=br)
+        log.append({"signal_date": str(s.date()), "equity": res["equity"], "orders": len(res.get("orders", [])), "targets": res["targets"],
+                    "blocked": res.get("blocked", []), "fills": len(res.get("fills", []))})
+    br.settle(p)
+    final = br.mark(p)
+    return {"months": len(me), "final_equity": final["equity"], "log": log, "history": br.s["history"], "fills": br.s["fills"]}

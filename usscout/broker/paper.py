@@ -63,6 +63,8 @@ class PaperBroker(Broker):
         """判定日の次の営業日の寄付（実際の値段）で約定させる。売りを先に、現金が足りなければ買いの株数を減らす。"""
         done, keep = [], []
         cal = p.close["SPY"].dropna().index
+        c_rate = self.costs.get("commission", 0) + self.costs.get("spread", 0)
+        scale = self._buy_scale(p, cal, c_rate)
         for o in sorted(self.s["pending"], key=lambda o: o["side"] != "sell"):
             later = cal[cal > pd.Timestamp(o["signal_date"])]
             sym = o["symbol"]
@@ -88,8 +90,7 @@ class PaperBroker(Broker):
                 else:
                     self.s["units"].pop(sym, None)
             else:
-                c_rate = self.costs.get("commission", 0) + self.costs.get("spread", 0)
-                q = min(q, math.floor(self.s["cash"] / (px * (1 + c_rate))))
+                q = min(math.floor(q * scale.get(o["signal_date"], 1.0)), math.floor(self.s["cash"] / (px * (1 + c_rate))))
                 if q <= 0:
                     done.append(dict(o, status="現金不足で見送り", fill_date=str(d.date())))
                     continue
@@ -105,6 +106,29 @@ class PaperBroker(Broker):
         self.s["pending"] = keep
         self.save()
         return done
+
+    def _buy_scale(self, p, cal, c_rate) -> dict:
+        """判定日ごとに、寄付の値段で売った後の現金が買いに足りなければ、買いを同じ割合で減らす（過去の検証と同じ）。"""
+        out = {}
+        for sd in {o["signal_date"] for o in self.s["pending"]}:
+            later = cal[cal > pd.Timestamp(sd)]
+            if not len(later):
+                continue
+            d = later[0]
+            cash, need = self.s["cash"], 0.0
+            for o in self.s["pending"]:
+                sym = o["symbol"]
+                if o["signal_date"] != sd or sym not in p.close or pd.isna(p.close.at[d, sym]) or pd.isna(p.raw.at[d, sym]):
+                    continue
+                ratio = float(p.raw.at[d, sym] / p.close.at[d, sym])
+                po = p.open.at[d, sym]
+                px = float(po) * ratio if pd.notna(po) and po > 0 else float(p.raw.at[d, sym])
+                if o["side"] == "sell":
+                    cash += min(float(o["qty"]), self.s["units"].get(sym, 0.0) / ratio) * px * (1 - c_rate)
+                else:
+                    need += float(o["qty"]) * px * (1 + c_rate)
+            out[sd] = min(1.0, cash / need) if need > 0 else 1.0
+        return out
 
     def mark(self, p, save: bool = True) -> dict:
         """最新の値段で評価し、最高値を更新する（分割・配当は調整後の値段で自動的に入る）。"""

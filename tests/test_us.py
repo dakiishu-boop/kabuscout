@@ -177,7 +177,7 @@ def test_plan_orders_band(cfg):
 def test_checks_block(cfg):
     p = make_panel(end=str(pd.Timestamp.now().date()))
     s = p.dates[-1]
-    o = [trader.Order("AAA", "buy", 100, 100.0)]
+    o = [trader.Order("AAA", "buy", 150, 100.0)]  # 資金の3倍（上限2.1倍）
     blocked, _, _ = trader.checks(cfg, o, {"AAA": 1.0}, 5000.0, 5000.0, p, s)
     assert any("売買の合計" in b for b in blocked)
     (cfg["data"]["dir"] / "STOP").write_text("")
@@ -242,3 +242,74 @@ def test_paper_broker_survives_split(cfg):
     px = {"AAA": float(p.raw.at[split, "AAA"])}
     w = {"AAA": 20 * px["AAA"] / after}
     assert trader.plan_orders(w, br.positions(), px, after, cfg) == []
+
+
+def test_replay_matches_backtest(cfg):
+    """過去をたどる自動売買（毎月 rebalance --execute → ペーパー口座で約定）が、過去の検証と同じ結果になる。"""
+    cfg["backtest"]["capital_usd"] = 200000
+    p = D.with_cash(make_panel(end="2009-12-31"))
+    mem = members_all(p)
+    s0 = pd.Timestamp("2007-12-31")
+    for name, tol in (("hold_spy", 0.005), ("etf_rotation", 0.03)):
+        r = trader.replay(cfg, str(s0.date()), strategy=name, data=(p, mem))
+        bt = backtest.run(p, trader._strategy(cfg, name, p, mem, s0), cfg, start="2008-01-01", members=mem).equity
+        assert r["months"] >= 20 and not any(x["blocked"] for x in r["log"])
+        assert r["final_equity"] == pytest.approx(bt.iloc[-1], rel=tol)
+
+
+def test_plan_orders_scales_buys_when_cash_short(cfg):
+    orders = trader.plan_orders({"AAA": 0.5, "BBB": 0.5}, {}, {"AAA": 10.0, "BBB": 10.0}, 1000.0, cfg, cash=500.0)
+    assert sum(o.value for o in orders) <= 500.0 and {o.symbol for o in orders} == {"AAA", "BBB"}
+    assert abs(orders[0].qty - orders[1].qty) <= 1
+
+
+def test_alpaca_requests(monkeypatch):
+    """Alpaca のひな形が送る中身（接続はしない。URL・鍵のヘッダ・注文の形だけ確かめる）。"""
+    from usscout.broker import alpaca
+    calls = []
+
+    class R:
+        def __init__(self, body):
+            self.body, self.content = body, b"x"
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.body
+
+    def fake(method, url, headers=None, timeout=None, json=None):
+        calls.append((method, url, headers, json))
+        if url.endswith("/v2/account"):
+            return R({"cash": "100.5", "equity": "250", "status": "ACTIVE"})
+        if url.endswith("/v2/positions"):
+            return R([{"symbol": "SPY", "qty": "3"}])
+        return R({"id": "1", "status": "accepted"})
+
+    monkeypatch.setattr(alpaca.requests, "request", fake)
+    a = alpaca.AlpacaBroker(key="KEY", secret="SECRET")
+    assert a.account() == {"cash": 100.5, "equity": 250.0, "status": "ACTIVE"}
+    assert a.positions() == {"SPY": 3.0}
+    a.submit([trader.Order("SPY", "buy", 2.0, 500.0), trader.Order("QQQ", "sell", 1.5, 400.0)], "2026-10-30")
+    m, url, h, body = calls[2]
+    assert (m, url) == ("POST", alpaca.PAPER_URL + "/v2/orders")
+    assert h == {"APCA-API-KEY-ID": "KEY", "APCA-API-SECRET-KEY": "SECRET"}
+    assert body == {"symbol": "SPY", "qty": "2", "side": "buy", "type": "market", "time_in_force": "opg",
+                    "client_order_id": "usscout-2026-10-30-SPY-buy"}
+    assert calls[3][3]["qty"] == "1.5" and calls[3][3]["side"] == "sell"
+
+
+def test_combo_extremes(cfg):
+    """米国0%＝日本株のAIだけ（税引き後は metrics.after_tax と同じ）、米国100%（NISA）＝米国株だけ（非課税）。"""
+    from usscout import combo
+    idx = pd.date_range("2008-01-04", "2012-12-28", freq="W-FRI")
+    rng = np.random.default_rng(1)
+    jp = pd.Series(1e6 * np.cumprod(1 + rng.normal(0.002, 0.02, len(idx))), index=idx)
+    us = pd.Series(1e6 * np.cumprod(1 + rng.normal(0.002, 0.02, len(idx))), index=idx)
+    fx = pd.Series(100.0, index=idx)
+    a = combo.combine(jp, us, 0.0, us_taxed=False, cfg=cfg, fx=fx)
+    assert a.iloc[-1] == pytest.approx(metrics.after_tax(jp, cfg["tax"]["rate"], cfg["tax"]["carry_years"]).iloc[-1], rel=1e-9)
+    b = combo.combine(jp, us, 1.0, us_taxed=False, cfg=cfg, fx=fx)
+    assert b.iloc[-1] == pytest.approx(us.iloc[-1] / us.iloc[0] * jp.iloc[0], rel=1e-9)
+    al = combo.allocation(700000, 2000, 150.0, 0.5)
+    assert al["move_jpy"] == 200000 and al["direction"] == "日本株 → 米国株"

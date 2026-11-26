@@ -2,13 +2,10 @@
 # 手動の実行だけ（定時実行はしない・通知は送らない・注文は出さない・Secrets は使わない）。
 # 結果は実行ページの Artifacts（usscout-report）からダウンロードできる。
 # ※ 手動の実行ボタンは、このファイルが既定のブランチ（main）にあるときだけ Actions タブに出る
+# 2026-11-26 に作業ブランチで1回だけ実行して成功（run 45862626160、約6分）。結果は手元の計算と一致
 name: us-research
 
 on:
-  # 一時的: 作業ブランチへの push で1回動かして、クラウドで動くことを確かめる（確認後に消す）
-  push:
-    branches: [claude/hopeful-einstein-gup9y9]
-    paths: [".github/workflows/us-research.yml"]
   workflow_dispatch:
     inputs:
       quick:

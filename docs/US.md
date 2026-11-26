@@ -64,6 +64,7 @@ Yahoo Finance（2005年〜の日足・配当・分割）     ─┴→ 月末の
 
 パソコンを使わずに計算したいとき: GitHub の Actions タブ → `us-research` → Run workflow（手動の実行だけ。注文・通知はしない。
 結果は実行ページの Artifacts に入る）。※ このボタンは `.github/workflows/us-research.yml` が main ブランチに入ってから出ます。
+2026-11-26 に作業ブランチで1回実行し、全部の手順が成功、結果は手元の計算と一致しました（約6分）。
 
 ## 自動売買
 

@@ -1,0 +1,47 @@
+# 自動売買ツール（autotrade/）の研究用。作業ブランチへの push で動く。
+# 本番のデータ（キャッシュ）は「読むだけ」。本番のキャッシュ・バックアップ・Discord・Webページには一切書き込まない。
+name: autotrade-lab
+
+on:
+  push:
+    branches: ["claude/**"]
+    paths: ["autotrade/**", ".github/workflows/autotrade-lab.yml"]
+  workflow_dispatch:
+
+concurrency: autotrade-lab-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # 本番のデータ（株価25年分など）を読むだけで戻す。保存（save）はしない
+      - uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: kabuscout-data-none
+          restore-keys: kabuscout-data-
+      # 研究の途中経過（特徴量の表など）だけを、このブランチ専用のキャッシュに置く（本番のキャッシュとは別の名前）
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/autotrade_cache
+          key: autotrade-cache-none
+          restore-keys: autotrade-cache-
+      - name: Lab
+        env:
+          PYTHONWARNINGS: ignore
+        run: python -m autotrade.lab $(cat autotrade/LAB_CMD)
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/autotrade_cache
+          key: autotrade-cache-${{ github.run_id }}

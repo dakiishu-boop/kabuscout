@@ -104,6 +104,40 @@ def confirm(market, S, elig, p0: Params, p1: Params) -> bool:
     return ok_all
 
 
+def aggressive(market, Sl, elig, p0: Params, p1: Params) -> None:
+    """条件（docs に実行前に記載）: すべての行で年率が凍結した版より高い。最大下落・最悪の年・年ごとも出す。
+    最後に、口座ごとの安全装置のしきい値の目安（全行の最悪の最大下落 + 10ポイント）を出す。"""
+    S = Sl[0]
+    Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
+    rows = [("full (ensemble)", S, {}, dict(start="2008-01-01")),
+            ("offset0", Sl[1], {}, dict(start="2008-01-01")), ("offset1", Sl[2], {}, dict(start="2008-01-01")),
+            ("offset2", Sl[3], {}, dict(start="2008-01-01")),
+            ("delay1", Sd, {}, dict(start="2008-01-01")),
+            ("full cost0.5%", S, {"cost": 0.005}, dict(start="2008-01-01")),
+            ("1M from 2019 cost0.2%", S, {}, dict(start="2019-01-01", capital=1_000_000)),
+            ("1M from 2019 cost0.5%+realfills", S, {"cost": 0.005}, dict(start="2019-01-01", capital=1_000_000, realistic_fills=True)),
+            ("1M kept from 2008 lot1000<2018-10", S, {}, dict(start="2008-01-01", capital=1_000_000, withdraw_above=1_000_000,
+                                                            lot_schedule=[("2018-10-01", 1000)]))]
+    ok = True
+    worst = {"frozen": 0.0, "aggr": 0.0}
+    for name, x, pk, rk in rows:
+        out = {}
+        for tag, p in (("frozen", p0), ("aggr", p1)):
+            r = sim.run(market, x, elig, replace(p, **pk), **rk)
+            st = sim.stats(r)
+            out[tag] = (st, sim.yearly(r["equity"]))
+            worst[tag] = min(worst[tag], st["max_dd"])
+        win = out["aggr"][0]["cagr"] > out["frozen"][0]["cagr"]
+        ok &= win
+        print(f"AGGR {name:36s} {'aggr higher' if win else 'AGGR NOT HIGHER'}")
+        for tag in ("frozen", "aggr"):
+            st, yr = out[tag]
+            print(f"   {tag:6s} {_fmt(st)} | years " + " ".join(f"{k}:{v * 100:+.0f}" for k, v in yr.items()))
+    print(f"AGGR RESULT: {'ADOPT' if ok else 'DO NOT ADOPT'}")
+    for tag, w in worst.items():
+        print(f"AGGR worst max drawdown over all rows [{tag}] {w * 100:.1f}% -> kill threshold {min(0.9, max(0.35, -w + 0.10)):.2f}")
+
+
 FINAL_CANDIDATES = [dict(rebalance_every=1, keep_rank=80), dict(rebalance_every=1, keep_rank=120),
                     dict(rebalance_every=1, keep_rank=50, min_hold_days=3), dict(rebalance_every=1, keep_rank=50, min_hold_days=5),
                     dict(rebalance_every=1, keep_rank=80, min_hold_days=5)]
@@ -181,6 +215,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model-params", default="")
     ap.add_argument("--only", default="A,B,C")
+    ap.add_argument("--aggr", action="store_true", help="弱い相場でも減らさない設定を凍結した版と並べる（実行前に条件を固定）")
     ap.add_argument("--final", action="store_true", help="最後の1回: 売買の回数を抑えた毎日入れ替え（5案・事前に固定）")
     ap.add_argument("--small", default="", help='比較用の口座の Params の差分（JSON）。100万円の口座で凍結した版と並べる')
     ap.add_argument("--confirm", default="", help='候補の Params の差分（JSON）。凍結した版と同じ条件で並べて確認する')
@@ -211,6 +246,10 @@ def main(argv: list[str]) -> None:
         return [sim.run(market, S, elig, p, start="2008-01-01") for S in Sl]
 
     S5 = scores(5)
+    if a.aggr:
+        aggressive(market, S5, elig, p0, replace(p0, regime_ma=0, regime_scale=1.0))
+        print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")
+        return
     if a.final:
         final(market, S5, elig, p0)
         print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")

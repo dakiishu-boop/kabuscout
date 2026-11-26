@@ -1,0 +1,43 @@
+# 米国株版（usscout）の過去の口座のシミュレーションと、今月の目標の比率を、パソコンなしでクラウドで計算する。
+# 手動の実行だけ（定時実行はしない・通知は送らない・注文は出さない・Secrets は使わない）。
+# 結果は実行ページの Artifacts（usscout-report）からダウンロードできる。
+# ※ 手動の実行ボタンは、このファイルが既定のブランチ（main）にあるときだけ Actions タブに出る
+name: us-research
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick:
+        description: "感度・ランダム比較を省いて速く回す"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 株価・銘柄表の取得
+        run: python -m usscout fetch
+      - name: シミュレーション
+        run: python -m usscout backtest ${{ inputs.quick && '--quick' || '' }} | tee us-report.md
+      - name: 今月の目標の比率
+        run: |
+          python -m usscout screen > us-screen.json
+          python -m usscout screen --strategy stock_mom > us-screen-stock_mom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usscout-report
+          path: |
+            us-report.md
+            us-screen*.json
+            data/us_scout/report.json

@@ -177,6 +177,9 @@ def rebalance(cfg: dict, strategy: str | None = None, broker: str | None = None,
         return out
     orders = plan_orders(w, pos, px, eq, cfg)
     blocked, warn, orders = checks(cfg, orders, w, eq, float(acct.get("peak_equity", eq)), p, s)
+    late = len(pd.bdate_range(s, pd.Timestamp.now(tz="America/New_York").tz_localize(None).normalize())) - 2
+    if late > 2:
+        warn.append(f"判定日 {s.date()} から約{late}営業日たっています（過去の検証は判定日の次の営業日の寄付で組み直す前提）")
     out.update(orders=[o.to_dict() for o in orders], blocked=blocked, warnings=warn)
     if blocked or not execute:
         if not execute:

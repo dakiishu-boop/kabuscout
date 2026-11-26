@@ -190,6 +190,31 @@ def suite_v3(market, scores_by_offset: dict, elig) -> None:
     print("MDD date", dd.idxmin().date(), "peak", eq[:dd.idxmin()].idxmax().date())
 
 
+def suite_v4(market, S, elig) -> None:
+    """本番の形（3つのモデルの平均 × CHOSEN）の最終確認。kabuscout と年ごとに並べる。"""
+    p = CHOSEN
+    d = p.to_dict()
+    out = run_grid(market, S, elig, [p], "ensemble")[0]
+    run_grid(market, S, elig, [Params(**{**d, "regime_ma": 0, "regime_scale": 1.0}), Params(**{**d, "n_hold": 5, "keep_rank": 30, "depth": 25})],
+             "ensemble-alt")
+    Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
+    run_grid(market, Sd, elig, [p], "ensemble-delay1")
+    run_grid(market, S, elig, [Params(**{**d, "cost": c}) for c in (0.003, 0.005)], "ensemble-cost")
+    for mult in (6,):
+        c_all, d_all = [], []
+        for sd in range(10):
+            res = sim.run(market, S, elig, p, start="2008-01-01", crash_mult=mult, seed=sd)
+            st = sim.stats(res)
+            c_all.append(st["cagr"]); d_all.append(st["max_dd"])
+        print(f"CRASH ensemble x{mult}: CAGR mean {np.mean(c_all)*100:+.1f}% worst {np.min(c_all)*100:+.1f}% MDD worst {np.min(d_all)*100:.1f}%")
+    rng = np.random.default_rng(7)
+    for sd in range(3):
+        R = np.where(np.isfinite(S), rng.random(S.shape), np.nan)
+        run_grid(market, R, elig, [p], f"random{sd}")
+    print("YEARS-JSON " + json.dumps(out["years"]))
+    print("STATS-JSON " + json.dumps(dict(all=out["all"], since2019=out["since2019"], design=out["design"])))
+
+
 def default_grid() -> list[Params]:
     g = []
     for n in (5, 8, 12):
@@ -238,6 +263,18 @@ def main(argv: list[str]) -> None:
         print(f"WF H={H} done {time.time()-t1:.0f}s")
         diagnostics(ds, col, H)
         preds[H] = col
+    if a.suite == "v4":
+        H = hs[0]
+        S = [D.to_wide(ds, preds[H], masks)]
+        for off in (1, 2):
+            ds["_tmp"] = M.walk_forward(ds, feats, f"y{H}", H, 2008, params=mp, sample_every=a.sample_every, offset=off)
+            S.append(D.to_wide(ds, "_tmp", masks))
+        ens = np.nanmean(np.stack(S), axis=0)  # 3つのモデルの予測の平均（毎日の運用と同じ）
+        ds["s_ens"] = ens[masks["ii"], masks["jj"]]
+        diagnostics(ds, "s_ens", H)
+        suite_v4(market, ens, elig)
+        print(f"TOTAL {time.time()-t0:.0f}s")
+        return
     if a.suite == "v3":
         H = hs[0]
         S = {0: D.to_wide(ds, preds[H], masks)}

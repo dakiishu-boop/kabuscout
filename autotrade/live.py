@@ -55,11 +55,14 @@ def train(cfg: dict, s: dict) -> dict:
     feats = F.FEATURES
     bundle = dict(features=feats, horizons=hs, models={}, trained=datetime.now(JST).isoformat(timespec="seconds"),
                   data_through=str(ds["date"].max().date()))
+    k = s["model"].get("sample_every", 3)
     for H in hs:
         tr = ds[ds["elig"]]
-        bundle["models"][H] = M.fit(tr, feats, f"y{H}", s["model"].get("params"), seeds=tuple(range(s["model"].get("seeds", 1))),
-                                    sample_every=s["model"].get("sample_every", 3))
-        log.info("モデル H=%d を学習（%d行）", H, int(tr[f"y{H}"].notna().sum()))
+        # 学習に使う日を k 日おきに間引き、間引き方（0〜k−1日目から）を変えた k 個のモデルの平均にする（研究の s_ens と同じ）
+        bundle["models"][H] = [m for off in range(k) for m in M.fit(tr, feats, f"y{H}", s["model"].get("params"),
+                                                                      seeds=tuple(range(s["model"].get("seeds", 1))),
+                                                                      sample_every=k, offset=off)]
+        log.info("モデル H=%d を学習（%d行・%d個の平均）", H, int(tr[f"y{H}"].notna().sum()), len(bundle["models"][H]))
     joblib.dump(bundle, state_dir(cfg) / "model.joblib")
     return bundle
 

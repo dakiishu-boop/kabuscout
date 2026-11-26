@@ -1,1 +1,1 @@
-research --horizons 5 --suite v2
+research --horizons 5 --suite v3 --offsets 0,1,2

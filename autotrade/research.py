@@ -148,6 +148,48 @@ def suite_v2(market, scores, elig, label: str) -> None:
                   f"2019+ CAGR mean {np.mean(c19)*100:+.1f}% worst {np.min(c19)*100:+.1f}%")
 
 
+CHOSEN = Params(n_hold=8, rebalance_every=5, keep_rank=48, depth=40, regime_ma=75, regime_scale=0.5)
+
+
+def suite_v3(market, scores_by_offset: dict, elig) -> None:
+    """採用候補（CHOSEN）の頑健性: 学習データの間引き方・約定の遅れ・コスト・倒産・配当・資金の大きさ。"""
+    p = CHOSEN
+    d = p.to_dict()
+    S = scores_by_offset[0]
+    print("=== V3 chosen config")
+    run_grid(market, S, elig, [p], "chosen")
+    for off, Sx in scores_by_offset.items():
+        if off:
+            run_grid(market, Sx, elig, [p], f"offset{off}")
+    print("=== V3 execution delayed by one day (decide with yesterday's scores)")
+    Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
+    run_grid(market, Sd, elig, [p], "delay1")
+    print("=== V3 cost")
+    run_grid(market, S, elig, [Params(**{**d, "cost": c}) for c in (0.003, 0.005)], "chosen")
+    print("=== V3 dividends")
+    run_grid(market, S, elig, [p], "chosen", dividends=True)
+    print("=== V3 capital")
+    for cap in (3_000_000, 10_000_000):
+        res = sim.run(market, S, elig, p, capital=cap, start="2008-01-01")
+        print(f"CAPITAL {cap:,}: all {_fmt(sim.stats(res))}")
+        print(f"CAPITAL {cap:,}: 2019+ {_fmt(sim.stats(res, HOLDOUT))}")
+    print("=== V3 bankruptcy injection")
+    for mult in (2, 6):
+        c_all, d_all, c19 = [], [], []
+        for sd in range(10):
+            res = sim.run(market, S, elig, p, start="2008-01-01", crash_mult=mult, seed=sd)
+            a, b = sim.stats(res), sim.stats(res, HOLDOUT)
+            c_all.append(a["cagr"]); d_all.append(a["max_dd"]); c19.append(b["cagr"])
+        print(f"CRASH chosen x{mult}: CAGR all mean {np.mean(c_all)*100:+.1f}% worst {np.min(c_all)*100:+.1f}% | "
+              f"MDD mean {np.mean(d_all)*100:.1f}% worst {np.min(d_all)*100:.1f}% | 2019+ CAGR mean {np.mean(c19)*100:+.1f}% worst {np.min(c19)*100:+.1f}%")
+    res = sim.run(market, S, elig, p, start="2008-01-01")
+    tr = res["trades"]
+    print("REASONS", tr["reason"].value_counts().to_dict())
+    eq = res["equity"]
+    dd = eq / eq.cummax() - 1
+    print("MDD date", dd.idxmin().date(), "peak", eq[:dd.idxmin()].idxmax().date())
+
+
 def default_grid() -> list[Params]:
     g = []
     for n in (5, 8, 12):
@@ -173,6 +215,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model-params", default="")
     ap.add_argument("--suite", default="")
+    ap.add_argument("--offsets", default="0")
     a = ap.parse_args(argv)
     from pathlib import Path
     from kabuscout.config import load_config
@@ -195,6 +238,17 @@ def main(argv: list[str]) -> None:
         print(f"WF H={H} done {time.time()-t1:.0f}s")
         diagnostics(ds, col, H)
         preds[H] = col
+    if a.suite == "v3":
+        H = hs[0]
+        S = {0: D.to_wide(ds, preds[H], masks)}
+        for off in [int(x) for x in a.offsets.split(",") if int(x)]:
+            sc = M.walk_forward(ds, feats, f"y{H}", H, 2008, params=mp, seeds=tuple(range(a.seeds)),
+                                sample_every=a.sample_every, offset=off)
+            ds["_tmp"] = sc
+            S[off] = D.to_wide(ds, "_tmp", masks)
+        suite_v3(market, S, elig)
+        print(f"TOTAL {time.time()-t0:.0f}s")
+        return
     if a.suite == "v2":
         feature_ics(ds, hs[0], feats)
         suite_v2(market, D.to_wide(ds, preds[hs[0]], masks), elig, preds[hs[0]])

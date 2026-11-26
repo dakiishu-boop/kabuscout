@@ -33,11 +33,11 @@ def recency_weight(dates: pd.Series, ref: pd.Timestamp, half_life_days: float | 
 
 
 def fit(train: pd.DataFrame, features: list[str], target: str, params: dict | None = None, seeds=(0,),
-        half_life_days: float | None = None, sample_every: int = 1):
+        half_life_days: float | None = None, sample_every: int = 1, offset: int = 0):
     d = train
     if sample_every > 1:
         days = np.sort(d["date"].unique())
-        d = d[d["date"].isin(set(days[::sample_every]))]
+        d = d[d["date"].isin(set(days[offset::sample_every]))]
     d = d[d[target].notna()]
     w = recency_weight(d["date"], d["date"].max(), half_life_days)
     X, y = d[features].to_numpy("float32"), d[target].to_numpy("float32") - 0.5
@@ -52,7 +52,7 @@ def predict(models, df: pd.DataFrame, features: list[str]) -> np.ndarray:
 def walk_forward(ds: pd.DataFrame, features: list[str], target: str, horizon: int, start_year: int,
                  params: dict | None = None, seeds=(0,), half_life_days: float | None = None,
                  sample_every: int = 3, end_year: int | None = None, train_col: str | None = "elig",
-                 min_train_days: int = 500) -> pd.Series:
+                 min_train_days: int = 500, offset: int = 0) -> pd.Series:
     """年ごとに学習し直して、その年の全行の点数を返す（index は ds と同じ）。
     学習には train_col が True の行（新規に買える銘柄）だけを使い、予測は全行に付ける（保有を続けるかの判断に使う）。"""
     dates = np.sort(ds["date"].unique())
@@ -68,7 +68,7 @@ def walk_forward(ds: pd.DataFrame, features: list[str], target: str, horizon: in
         te_mask = (ds["date"] >= y0) & (ds["date"] < np.datetime64(f"{y + 1}-01-01"))
         if not te_mask.any():
             continue
-        models = fit(tr, features, target, params, seeds, half_life_days, sample_every)
+        models = fit(tr, features, target, params, seeds, half_life_days, sample_every, offset)
         out[te_mask] = predict(models, ds[te_mask], features)
         log.info("  %d年: 学習 %d行（〜%s）→ %d行を予測", y, int(tr[target].notna().sum()), str(purge)[:10], int(te_mask.sum()))
     return out

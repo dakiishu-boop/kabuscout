@@ -105,9 +105,13 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--half-life", type=float, default=0)
     ap.add_argument("--grid", default="default")
     ap.add_argument("--features", default="all")
+    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--model-params", default="")
     a = ap.parse_args(argv)
+    from pathlib import Path
     from kabuscout.config import load_config
-    cfg = load_config("config.yaml")
+    cfg = load_config(Path(a.config))
+    mp = json.loads(a.model_params) if a.model_params else None
     hs = [int(x) for x in a.horizons.split(",")]
     t0 = time.time()
     ds, market, masks = D.build(cfg, horizons=hs, with_events=bool(a.events))
@@ -120,7 +124,7 @@ def main(argv: list[str]) -> None:
     for H in hs:
         t1 = time.time()
         col = f"s{H}"
-        ds[col] = M.walk_forward(ds, feats, f"y{H}", H, 2008, seeds=tuple(range(a.seeds)),
+        ds[col] = M.walk_forward(ds, feats, f"y{H}", H, 2008, params=mp, seeds=tuple(range(a.seeds)),
                                  half_life_days=a.half_life or None, sample_every=a.sample_every)
         print(f"WF H={H} done {time.time()-t1:.0f}s")
         diagnostics(ds, col, H)

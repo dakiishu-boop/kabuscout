@@ -231,3 +231,33 @@ def test_build_from_price_store(cfg, synth):
     assert market.close[100, j] == pytest.approx(float(c["1000"].iloc[100]) * 2, rel=1e-5)
     assert market.close[800, j] == pytest.approx(float(c["1000"].iloc[800]), rel=1e-5)
     assert market.splits[700, j] == 2.0
+
+
+def test_live_daily_places_orders_then_fills_next_day(cfg, synth, tmp_path):
+    """毎日の運用: 1日目に注文 → データが1日進んだ2日目に寄付で約定。状態は保存して引き継ぐ。"""
+    from kabuscout.data import PriceStore
+    from autotrade import live
+    o, h, l, c, v, mkt = synth
+    def save(n):
+        P = {k: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if k != "volume" else 0.0)})
+             for k, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
+        P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
+        P["dividends"] = pd.DataFrame()
+        PriceStore(cfg["data"]["price_dir"]).save(P)
+    s = live.load_settings()
+    s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
+    s["strategy"].update(n_hold=4, keep_rank=8)
+    s["risk"]["max_order_value"] = 1e9
+    save(850)
+    r1 = live.daily(cfg, s, notify=False, today=c.index[849])
+    assert r1["positions"] == [] and len(r1["orders"]) >= 1
+    assert all(x["side"] == "buy" and x["shares"] % 100 == 0 for x in r1["orders"])
+    save(851)
+    r2 = live.daily(cfg, s, notify=False, today=c.index[850])
+    bought = {x["code"] for x in r2["positions"]}
+    assert bought == {x["code"] for x in r1["orders"]}
+    st = json.loads((live.state_dir(cfg) / "state.json").read_text())
+    assert st["last_date"] == str(c.index[850].date()) and len(st["equity"]) == 2
+    # 同じデータでもう一度動かしても、二重に約定・注文しない
+    r3 = live.daily(cfg, s, notify=False, today=c.index[850])
+    assert r3["positions"] == r2["positions"] and r3["orders"] == []

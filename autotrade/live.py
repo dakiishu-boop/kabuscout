@@ -94,7 +94,10 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
     p = params_of(s)
     sd = state_dir(cfg)
     st_path = sd / "state.json"
-    start = (pd.Timestamp.today() - pd.Timedelta(days=900)).strftime("%Y-%m-%d")  # 特徴量に1年強の履歴が要る
+    from kabuscout.data import PriceStore
+    proxy = cfg["universe"]["market_proxy"]
+    end = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
+    start = (end - pd.Timedelta(days=900)).strftime("%Y-%m-%d")  # 特徴量に1年強の履歴が要る（データの最終日から数える）
     ds, market, masks = D.build(cfg, horizons=(), start=start)
     cal = market.cal
     cix = {c: j for j, c in enumerate(market.codes)}
@@ -141,7 +144,6 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
             sc = score(bundle, rows)
             scores = dict(zip(rows["code"], sc))
             elig = set(rows.loc[rows["elig"], "code"])
-            st["since_reb"] = 0
         else:
             scores, elig, reb = {c: 0.0 for c in b.positions()}, set(), False
         orders = decide(b, scores, elig, crow, reb, bool(market.weak[i]), p)
@@ -149,6 +151,8 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
         age = _busdays_between(cal[i], now)
         orders, blocked = guard.check(orders, eq, st["peak"], {c: crow.get(c) for c in {o.code for o in orders}}, age)
         b.submit(orders)
+        if reb and age <= guard.limits.data_max_age_days:
+            st["since_reb"] = 0  # 古いデータで止めた日は入れ替えたことにしない（次の実行でもう一度判断する）
     st["broker"], st["guard"] = b.to_dict(), guard.to_dict()
     st["log"] = (st.get("log", []) + events)[-500:]
     tmp = st_path.with_suffix(".tmp")

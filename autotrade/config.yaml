@@ -1,0 +1,25 @@
+# 自動売買（autotrade）の設定。kabuscout の config.yaml（データの置き場所・通知）はそのまま使う。
+# 値は research（2008〜2018年の設計期間）で選んだもの。docs/AUTOTRADE.md に根拠を書く。
+account:
+  capital: 1000000        # kabuscout の比較と同じ100万円
+strategy:
+  n_hold: 8               # 同時に持つ銘柄数
+  rebalance_every: 5      # 何営業日ごとに入れ替えるか
+  keep_rank: 24           # 持っている銘柄は、この順位以内なら持ち続ける
+  depth: 40               # 新規に買う候補を何位まで見るか
+  stop_loss: 0.0
+  regime_ma: 0
+  regime_scale: 1.0
+  lot: 100
+  cost: 0.002
+model:
+  horizons: [5, 20]       # 5営業日後・20営業日後の順位を学習し、2つの順位の平均で並べる
+  seeds: 1
+  sample_every: 3
+risk:                     # 注文直前の安全装置（autotrade/risk.py）
+  max_order_value: 400000
+  max_order_frac: 0.35
+  max_price_move: 0.3
+  max_orders_per_day: 20
+  kill_drawdown: 0.35
+  data_max_age_days: 3

@@ -57,6 +57,9 @@ def main(argv: list[str]) -> None:
     cmd = argv[0] if argv else "probe"
     if cmd == "probe":
         probe()
+    elif cmd == "improve":
+        from . import improve
+        improve.main(argv[1:])
     elif cmd == "verify":
         from . import verify
         verify.main(argv[1:])

@@ -1,0 +1,148 @@
+"""もっと年率の高い形を探す（ユーザーの依頼、2026-11-26）。採用ルールは docs/AUTOTRADE.md に試す前に書いたもの:
+ 1. 2008〜2018年・2019年以降の両方で、凍結した版よりシャープ比が高い（または最大下落が同程度=2ポイント以内で年率が高い）
+ 2. 学習に使う日の間引き方3通りのどれでも凍結した版を上回る（各間引き方のモデル同士で比べる）
+ 3. 凍結した版との週ごとの損益の差の t ≥ 2.5
+ 4. 投資する量を増やしただけの案は数えない（ここでは試さない）
+
+試す案（どれも検証で分かった事実から）:
+ A. 入れ替えを早くする（1日遅れると効果が半減した → 新しい情報ほど価値がある）: 1・2・3営業日ごと
+ B. 短い予測期間（H=2・3）と、H=5 との平均
+ C. 特徴量を間引いた（max_features=0.6）モデルを、乱数の種2つ × 間引き方3つの平均にする
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from dataclasses import replace
+
+import numpy as np
+import pandas as pd
+
+from . import data as D
+from . import features as F
+from . import model as M
+from . import sim
+from .research import HOLDOUT, _fmt
+from .strategy import Params
+
+log = logging.getLogger("autotrade.improve")
+DESIGN_END = "2018-12-31"
+
+
+def _sub(res, a=None, b=None):
+    eq = res["equity"]
+    k = np.ones(len(eq), bool)
+    if a:
+        k &= eq.index >= pd.Timestamp(a)
+    if b:
+        k &= eq.index <= pd.Timestamp(b)
+    tr = res["trades"]
+    tk = np.ones(len(tr), bool)
+    if a:
+        tk &= tr["date"] >= pd.Timestamp(a)
+    if b:
+        tk &= tr["date"] <= pd.Timestamp(b)
+    return dict(equity=eq[k], trades=tr[tk], exposure=res["exposure"][k])
+
+
+def summary(res) -> dict:
+    return dict(design=sim.stats(_sub(res, None, DESIGN_END)), hold=sim.stats(_sub(res, HOLDOUT)), all=sim.stats(res))
+
+
+def better(c: dict, f: dict) -> bool:
+    """規則1の判定（1つの期間）: シャープが高い、または最大下落が2ポイント以内で年率が高い。"""
+    return (c["sharpe"] > f["sharpe"]) or (c["max_dd"] >= f["max_dd"] - 0.02 and c["cagr"] > f["cagr"])
+
+
+def paired_t(a: pd.Series, b: pd.Series) -> float:
+    ra = a.resample("W-FRI").last().pct_change().dropna()
+    rb = b.resample("W-FRI").last().pct_change().dropna()
+    d = (ra - rb).dropna()
+    return float(d.mean() / d.std() * np.sqrt(len(d))) if d.std() > 0 else 0.0
+
+
+def judge(name: str, cand: list[dict], frozen: list[dict]) -> bool:
+    """cand / frozen: [平均の結果, 間引き方0, 1, 2 の結果]（それぞれ sim.run の戻り値）。"""
+    sc, sf = summary(cand[0]), summary(frozen[0])
+    r1 = better(sc["design"], sf["design"]) and better(sc["hold"], sf["hold"])
+    r2 = all(better(summary(c)["all"], summary(f)["all"]) for c, f in zip(cand[1:], frozen[1:])) if len(cand) > 1 else False
+    t = paired_t(cand[0]["equity"], frozen[0]["equity"])
+    ok = r1 and r2 and t >= 2.5
+    print(f"JUDGE {name}: rule1(both periods) {'OK' if r1 else 'NG'} | rule2(all offsets) {'OK' if r2 else 'NG'} | "
+          f"rule3 t={t:+.2f} {'OK' if t >= 2.5 else 'NG'} => {'PASS' if ok else 'fail'}")
+    print(f"   cand  design {_fmt(sc['design'])}")
+    print(f"   cand  2019+  {_fmt(sc['hold'])}")
+    print(f"   cand  all    {_fmt(sc['all'])}")
+    for k, c in enumerate(cand[1:]):
+        print(f"   cand  offset{k} all {_fmt(summary(c)['all'])}")
+    return ok
+
+
+def main(argv: list[str]) -> None:
+    import argparse
+    import warnings
+    from pathlib import Path
+    warnings.filterwarnings("ignore")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--model-params", default="")
+    ap.add_argument("--only", default="A,B,C")
+    a = ap.parse_args(argv)
+    only = set(a.only.split(","))
+    from kabuscout.config import load_config
+    from . import live
+    cfg = load_config(Path(a.config))
+    mp = json.loads(a.model_params) if a.model_params else {}
+    s = live.load_settings()
+    p0 = Params(**s["strategy"])
+    t0 = time.time()
+    hs = (2, 3, 5) if "B" in only else (5,)
+    ds, market, masks = D.build(cfg, horizons=hs)
+    elig = np.zeros(masks["shape"], dtype=bool)
+    elig[masks["ii"], masks["jj"]] = ds["elig"].to_numpy()
+    feats = F.FEATURES
+
+    def scores(H, params=None, seeds=(0,)):
+        parts = []
+        for off in range(3):
+            ds["_tmp"] = M.walk_forward(ds, feats, f"y{H}", H, 2008, params={**mp, **(params or {})}, seeds=seeds,
+                                        sample_every=3, offset=off)
+            parts.append(D.to_wide(ds, "_tmp", masks))
+        return [np.nanmean(np.stack(parts), axis=0)] + parts
+
+    def runs(Sl, p):
+        return [sim.run(market, S, elig, p, start="2008-01-01") for S in Sl]
+
+    S5 = scores(5)
+    frozen = runs(S5, p0)
+    print(f"FROZEN {json.dumps(p0.to_dict())} ({time.time() - t0:.0f}s)")
+    print(f"   design {_fmt(summary(frozen[0])['design'])}")
+    print(f"   2019+  {_fmt(summary(frozen[0])['hold'])}")
+    print(f"   all    {_fmt(summary(frozen[0])['all'])}")
+    passed = []
+    if "A" in only:
+        for reb, keep in ((1, 30), (1, 50), (2, 30), (3, 30)):
+            p = replace(p0, rebalance_every=reb, keep_rank=keep)
+            if judge(f"A reb={reb} keep={keep}", runs(S5, p), frozen):
+                passed.append(f"A reb={reb} keep={keep}")
+    if "B" in only:
+        for H in (2, 3):
+            SH = scores(H)
+            if judge(f"B H={H}", runs(SH, p0), frozen):
+                passed.append(f"B H={H}")
+            # H と H=5 の平均（間引き方ごとに平均）
+            mix = [np.nanmean(np.stack([x, y]), axis=0) for x, y in zip(SH, S5)]
+            if judge(f"B H={H}+5", runs(mix, p0), frozen):
+                passed.append(f"B H={H}+5")
+            for reb in (1, 2):
+                if judge(f"B H={H} reb={reb}", runs(SH, replace(p0, rebalance_every=reb)), frozen):
+                    passed.append(f"B H={H} reb={reb}")
+            print(f"  ({time.time() - t0:.0f}s)")
+    if "C" in only:
+        SC = scores(5, params=dict(max_features=0.6), seeds=(0, 1))
+        if judge("C max_features=0.6 x2 seeds", runs(SC, p0), frozen):
+            passed.append("C")
+    print("PASSED " + json.dumps(passed, ensure_ascii=False))
+    print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")

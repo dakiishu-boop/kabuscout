@@ -83,6 +83,71 @@ def run_grid(market, scores, elig, grid: list[Params], label: str, dividends: bo
     return out
 
 
+def feature_ics(ds: pd.DataFrame, H: int, feats: list[str]) -> None:
+    """特徴量ごとの単独の予測力（その日の順位と H 日後の順位の相関の平均。設計期間と検証期間）。"""
+    d = ds[ds["elig"] & ds[f"y{H}"].notna() & (ds["date"] >= pd.Timestamp("2008-01-01"))]
+    days = np.sort(d["date"].unique())[::H]
+    d = d[d["date"].isin(set(days))]
+    rows = []
+    for f in feats:
+        ic = d.groupby("date").apply(lambda x: x[f].corr(x[f"y{H}"]))
+        rows.append((f, ic[ic.index < pd.Timestamp(HOLDOUT)].mean(), ic[ic.index >= pd.Timestamp(HOLDOUT)].mean()))
+    rows.sort(key=lambda r: -abs(r[1]))
+    for f, a, b in rows:
+        print(f"FEATIC {f:22s} 2008-18 {a:+.3f}  2019+ {b:+.3f}")
+
+
+def universe_ew(market, elig) -> pd.Series:
+    """対象銘柄を毎日すべて同じ金額ずつ持った場合（寄付→翌日の寄付、コストなし）。母集団そのものの上げ幅（生存者バイアス込み）。"""
+    o = market.open
+    r = o[1:] / o[:-1] - 1
+    r = np.where(elig[:-1] & np.isfinite(r) & (np.abs(r) < 1.0), r, np.nan)
+    m = np.nanmean(r, axis=1)
+    m = np.nan_to_num(m)
+    eq = pd.Series(np.r_[1.0, np.cumprod(1 + m)] * 1e6, index=market.cal)
+    return eq[eq.index >= pd.Timestamp("2008-01-01")]
+
+
+def suite_v2(market, scores, elig, label: str) -> None:
+    from kabuscout.backtest import _stats
+    base = [Params(n_hold=5, rebalance_every=5, keep_rank=30, depth=25),
+            Params(n_hold=5, rebalance_every=10, keep_rank=30, depth=25),
+            Params(n_hold=8, rebalance_every=5, keep_rank=48, depth=40),
+            Params(n_hold=8, rebalance_every=10, keep_rank=48, depth=40),
+            Params(n_hold=12, rebalance_every=10, keep_rank=36, depth=60)]
+    risk = []
+    for b in (base[0], base[2]):
+        d = b.to_dict()
+        risk += [Params(**{**d, "regime_ma": 200, "regime_scale": 0.5}), Params(**{**d, "regime_ma": 200, "regime_scale": 0.0}),
+                 Params(**{**d, "regime_ma": 75, "regime_scale": 0.5}), Params(**{**d, "stop_loss": 0.15}),
+                 Params(**{**d, "stop_loss": 0.08})]
+    run_grid(market, scores, elig, base + risk, label)
+    print("=== COST sensitivity")
+    run_grid(market, scores, elig, [Params(**{**b.to_dict(), "cost": c}) for b in base[:3] for c in (0.003, 0.005)], label)
+    print("=== DIVIDENDS included (after 20.315% tax)")
+    run_grid(market, scores, elig, base[:3], label, dividends=True)
+    print("=== RANDOM picks (same mechanics, random scores among eligible)")
+    rng = np.random.default_rng(0)
+    for sd in range(3):
+        R = np.where(np.isfinite(scores), rng.random(scores.shape), np.nan)
+        run_grid(market, R, elig, base[:3], f"random{sd}")
+    eq = universe_ew(market, elig)
+    k19 = eq.index >= pd.Timestamp(HOLDOUT)
+    print(f"UNIVERSE-EW all {_fmt(_stats(eq))}")
+    print(f"UNIVERSE-EW 2019+ {_fmt(_stats(eq[k19]))}")
+    print("=== BANKRUPTCY injection (x2 and x6 the yearly listed-company bankruptcy rate; 10 runs each)")
+    for p in base[:3]:
+        for mult in (2, 6):
+            c_all, d_all, c19 = [], [], []
+            for sd in range(10):
+                res = sim.run(market, scores, elig, p, start="2008-01-01", crash_mult=mult, seed=sd)
+                a, b = sim.stats(res), sim.stats(res, HOLDOUT)
+                c_all.append(a["cagr"]); d_all.append(a["max_dd"]); c19.append(b["cagr"])
+            print(f"CRASH n={p.n_hold} reb={p.rebalance_every} x{mult}: CAGR all mean {np.mean(c_all)*100:+.1f}% "
+                  f"worst {np.min(c_all)*100:+.1f}% | MDD mean {np.mean(d_all)*100:.1f}% worst {np.min(d_all)*100:.1f}% | "
+                  f"2019+ CAGR mean {np.mean(c19)*100:+.1f}% worst {np.min(c19)*100:+.1f}%")
+
+
 def default_grid() -> list[Params]:
     g = []
     for n in (5, 8, 12):
@@ -107,6 +172,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--features", default="all")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model-params", default="")
+    ap.add_argument("--suite", default="")
     a = ap.parse_args(argv)
     from pathlib import Path
     from kabuscout.config import load_config
@@ -129,6 +195,11 @@ def main(argv: list[str]) -> None:
         print(f"WF H={H} done {time.time()-t1:.0f}s")
         diagnostics(ds, col, H)
         preds[H] = col
+    if a.suite == "v2":
+        feature_ics(ds, hs[0], feats)
+        suite_v2(market, D.to_wide(ds, preds[hs[0]], masks), elig, preds[hs[0]])
+        print(f"TOTAL {time.time()-t0:.0f}s")
+        return
     # 点数の組み合わせ（各 H の順位の平均）
     cols = list(preds.values())
     ds["s_mix"] = ds.groupby("date")[cols].rank(pct=True).mean(axis=1) if len(cols) > 1 else ds[cols[0]]

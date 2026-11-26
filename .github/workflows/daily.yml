@@ -114,6 +114,17 @@ jobs:
           python -m kabuscout daily $ARGS
           python -m kabuscout site   # 休場日などでスキップした日もページは最新化
 
+      # 自動売買（autotrade）のペーパートレード: 今日の寄付の約定・時価評価・翌朝の注文（docs/AUTOTRADE.md）。
+      # 失敗・時間切れでも本番（スクリーニング・キャッシュの保存・Webの公開）は止めない
+      - name: Auto-trading (paper account)
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PYTHONWARNINGS: ignore
+        run: python -m autotrade daily
+
       # 影のモデル（shadow.yaml）の学習し直しが要るか。要る日だけ、下の shadow ジョブで学習する（Webの公開を遅らせないため）
       - name: Check if shadow models need retraining
         id: shadow_due

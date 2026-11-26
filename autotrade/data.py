@@ -82,7 +82,7 @@ def build(cfg: dict, horizons=(5, 10, 20), uni: Universe = Universe(), start: st
     market = Market(cal=c.index, codes=list(c.columns), open=(o * fac).to_numpy("float64"),
                     close=raw_c.ffill(limit=5).to_numpy("float64"),
                     splits=(splits.to_numpy("float64") if splits is not None else np.ones(c.shape)),
-                    div=(div * fac).to_numpy("float64") if div is not None else None, weak=ma[200])
+                    div=(div * fac).to_numpy("float64") if div is not None else None, weak=ma[200], weak_ma=ma)
     return ds, market, dict(ma=ma, ii=ii, jj=jj, shape=c.shape, mkt=mkt)
 
 

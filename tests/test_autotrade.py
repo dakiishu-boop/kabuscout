@@ -261,3 +261,20 @@ def test_live_daily_places_orders_then_fills_next_day(cfg, synth, tmp_path):
     # 同じデータでもう一度動かしても、二重に約定・注文しない
     r3 = live.daily(cfg, s, notify=False, today=c.index[850])
     assert r3["positions"] == r2["positions"] and r3["orders"] == []
+
+
+def test_crash_injection_lowers_returns(synth):
+    """生存者バイアスの検証（倒産の混入）: 倒産の確率を上げるほど成績は下がり、倒産した銘柄は −95% 前後で売られる。"""
+    o, h, l, c, v, mkt = synth
+    T, N = c.shape
+    rng = np.random.default_rng(3)
+    S = rng.random((T, N))
+    market = sim.Market(cal=c.index, codes=list(c.columns), open=o.to_numpy(), close=c.to_numpy(),
+                        splits=np.ones((T, N)), div=None, weak=np.zeros(T, dtype=bool))
+    p = Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20)
+    base = sim.run(market, S, np.ones((T, N), bool), p)
+    hit = sim.run(market, S, np.ones((T, N), bool), p, crash_mult=3000, seed=1)
+    assert hit["equity"].iloc[-1] < base["equity"].iloc[-1]
+    tr = hit["trades"]
+    crash = tr[tr["reason"] == "倒産（検証）"]
+    assert len(crash) > 0 and (crash["net"] < -0.9).all()

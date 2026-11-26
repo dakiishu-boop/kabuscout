@@ -146,7 +146,8 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
             elig = set(rows.loc[rows["elig"], "code"])
         else:
             scores, elig, reb = {c: 0.0 for c in b.positions()}, set(), False
-        orders = decide(b, scores, elig, crow, reb, bool(market.weak[i]), p)
+        weak = bool(market.weak_ma.get(p.regime_ma, market.weak)[i]) if p.regime_ma else False
+        orders = decide(b, scores, elig, crow, reb, weak, p)
         now = today or pd.Timestamp(datetime.now(JST).date())
         age = _busdays_between(cal[i], now)
         orders, blocked = guard.check(orders, eq, st["peak"], {c: crow.get(c) for c in {o.code for o in orders}}, age)

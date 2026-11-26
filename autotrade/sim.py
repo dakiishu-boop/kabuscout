@@ -39,12 +39,24 @@ class Market:
     close: np.ndarray       # T×N 実際の終値（数日の欠けは前の値で埋めたもの）
     splits: np.ndarray      # T×N 分割の比率（その日に 1→r）。無ければ 1
     div: np.ndarray | None  # T×N 実際の1株配当（権利落ち日）
-    weak: np.ndarray        # T 地合いが弱い日
+    weak: np.ndarray        # T 地合いが弱い日（日経平均が200日線の下）
+    weak_ma: dict | None = None  # {移動平均の日数: T の弱い日}（Params.regime_ma で選ぶ）
+
+
+# 上場企業の倒産件数（年）。生存者バイアスの検証で、保有中の銘柄が倒産する確率の目安に使う。
+# 2008〜2010年は kabuscout のジャーナル §49 の値。それ以外の年は資料を確かめていないので、多めに見て一律5社とした（仮定）
+BANKRUPTCIES = {2008: 33, 2009: 20, 2010: 10}
+LISTED = 3600
 
 
 def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, capital: float = 1_000_000,
-        start: str | None = None, end: str | None = None, dividends: bool = False) -> dict:
-    """scores: T×N の点数（NaN = 点数なし）。eligible: T×N の新規に買ってよいか。"""
+        start: str | None = None, end: str | None = None, dividends: bool = False,
+        crash_mult: float = 0.0, seed: int = 0) -> dict:
+    """scores: T×N の点数（NaN = 点数なし）。eligible: T×N の新規に買ってよいか。
+    crash_mult > 0: 生存者バイアスの検証。保有中の銘柄が1日あたり「その年の倒産率 × crash_mult ÷ 250」の確率で
+    倒産したとみなし、その日の終値の5%で翌朝売る（実際のデータには倒産した銘柄が無いため）。"""
+    rng = np.random.default_rng(seed)
+    crashed: dict[str, float] = {}
     cal = market.cal
     cix = {c: j for j, c in enumerate(market.codes)}
     i0 = 0 if start is None else int(cal.searchsorted(pd.Timestamp(start)))
@@ -52,6 +64,7 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     b = PaperBroker(capital, p.cost, p.lot)
     curve, expo = [], []
     since_reb = 10 ** 9
+    weak = (market.weak_ma or {}).get(p.regime_ma, market.weak) if p.regime_ma else np.zeros(len(cal), dtype=bool)
     for i in range(i0, i1):
         d = cal[i].strftime("%Y-%m-%d")
         sp = market.splits[i]
@@ -60,10 +73,28 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
                       if sp[cix[c]] == sp[cix[c]] and sp[cix[c]] not in (0, 1)}
             if ratios:
                 b.apply_splits(ratios)
-        b.execute_open(d, _Row(market.open[i], cix))
+        orow = _Row(market.open[i], cix)
+        if crashed:  # 倒産した銘柄は、倒産後の値段（最後の終値の5%）でしか売れない
+            arr = market.open[i].copy()
+            for c, v in crashed.items():
+                arr[cix[c]] = v
+            orow = _Row(arr, cix)
+        b.execute_open(d, orow)
+        crashed = {c: v for c, v in crashed.items() if c in b.positions()}
         if dividends and market.div is not None and b.positions():
             b.add_dividends({c: float(market.div[i, cix[c]]) for c in b.positions()})
-        crow = _Row(market.close[i], cix)
+        carr = market.close[i]
+        if crash_mult > 0 and b.positions():
+            h = BANKRUPTCIES.get(cal[i].year, 5) / LISTED * crash_mult / 250
+            for c, ps in b.positions().items():
+                if c not in crashed and rng.random() < h:
+                    last = carr[cix[c]]
+                    crashed[c] = 0.05 * (float(last) if last == last else ps.entry_px)
+        if crashed:
+            carr = carr.copy()
+            for c, v in crashed.items():
+                carr[cix[c]] = v
+        crow = _Row(carr, cix)
         eq = b.mark(crow)
         curve.append((cal[i], eq))
         expo.append(1 - b.cash() / eq if eq > 0 else 0.0)
@@ -83,7 +114,12 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
         else:
             sc = {c: 0.0 for c in b.positions()}
             el = set()
-        orders = decide(b, sc, el, crow, reb, bool(market.weak[i]), p)
+        orders = decide(b, sc, el, crow, reb, bool(weak[i]), p)
+        if crashed:  # 倒産した銘柄は、入れ替え日でなくても翌朝売る（倒産後の値段で）
+            have = {o.code for o in orders}
+            from .broker import Order
+            orders += [Order(c, "sell", b.positions()[c].shares, v, "倒産（検証）") for c, v in crashed.items()
+                       if c not in have]
         b.submit(orders)
     eqs = pd.Series(dict(curve))
     sells = [f for f in b.fills if f.side == "sell"]

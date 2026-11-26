@@ -104,6 +104,25 @@ def confirm(market, S, elig, p0: Params, p1: Params) -> bool:
     return ok_all
 
 
+def small(market, S, elig, p0: Params, p1: Params) -> None:
+    """ユーザーの実際の資金（100万円）での成績。kabuscout のジャーナル §82 の「100万円で2019年に開始」と同じ見方。"""
+    rows = [("1M from 2019", "2019-01-01", {}, {}),
+            ("1M from 2019, kept at 1M (withdraw above)", "2019-01-01", {}, {"withdraw_above": 1_000_000}),
+            ("1M from 2019, cost0.3%+realfills", "2019-01-01", {"cost": 0.003}, {"realistic_fills": True}),
+            ("1M from 2019, cost0.5%+realfills", "2019-01-01", {"cost": 0.005}, {"realistic_fills": True}),
+            ("1M from 2019, kept at 1M, cost0.5%+realfills", "2019-01-01", {"cost": 0.005},
+             {"withdraw_above": 1_000_000, "realistic_fills": True}),
+            ("1M from 2008, kept at 1M", "2008-01-01", {}, {"withdraw_above": 1_000_000}),
+            ("1M from 2008, kept at 1M, lot1000<2018-10", "2008-01-01", {}, {"withdraw_above": 1_000_000,
+                                                                               "lot_schedule": [("2018-10-01", 1000)]})]
+    for name, start, pk, rk in rows:
+        for tag, p in (("frozen", p0), ("shadow", p1)):
+            r = sim.run(market, S, elig, replace(p, **pk), start=start, capital=1_000_000, **rk)
+            st = sim.stats(r)
+            yr = sim.yearly(r["equity"])
+            print(f"SMALL {name:48s} {tag:6s} {_fmt(st)} | years " + " ".join(f"{k}:{v * 100:+.0f}" for k, v in yr.items()))
+
+
 def main(argv: list[str]) -> None:
     import argparse
     import warnings
@@ -114,6 +133,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model-params", default="")
     ap.add_argument("--only", default="A,B,C")
+    ap.add_argument("--small", default="", help='比較用の口座の Params の差分（JSON）。100万円の口座で凍結した版と並べる')
     ap.add_argument("--confirm", default="", help='候補の Params の差分（JSON）。凍結した版と同じ条件で並べて確認する')
     a = ap.parse_args(argv)
     only = set(a.only.split(","))
@@ -142,6 +162,10 @@ def main(argv: list[str]) -> None:
         return [sim.run(market, S, elig, p, start="2008-01-01") for S in Sl]
 
     S5 = scores(5)
+    if a.small:
+        small(market, S5[0], elig, p0, replace(p0, **json.loads(a.small)))
+        print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")
+        return
     if a.confirm:
         confirm(market, S5[0], elig, p0, replace(p0, **json.loads(a.confirm)))
         print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")

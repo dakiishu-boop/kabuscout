@@ -25,6 +25,7 @@ class Params:
     regime_scale: float = 1.0
     lot: int = 100
     cost: float = 0.002          # 往復の取引コスト（kabuscout の research.cost と同じ既定値）
+    min_hold_days: int = 0       # 買ってからこの営業日数までは「順位低下」では売らない（売買の回数を抑える。損切・地合いは別）
     max_adv_frac: float = 0.0    # 1注文を「20日平均売買代金 × この割合」までにする（0 なら上限なし。自分の注文で値段を動かさないため）
 
     def to_dict(self) -> dict:
@@ -52,7 +53,7 @@ def decide(broker: PaperBroker, scores: dict[str, float], eligible: set[str], cl
         why = None
         if p.stop_loss and c <= ps.entry_px * (1 - p.stop_loss):
             why = "損切"
-        elif rebalance and rank.get(code, 10 ** 9) >= p.keep_rank:
+        elif rebalance and rank.get(code, 10 ** 9) >= p.keep_rank and ps.days_held >= p.min_hold_days:
             why = "順位低下"
         if why:
             orders.append(Order(code, "sell", ps.shares, c, why))

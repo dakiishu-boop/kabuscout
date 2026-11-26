@@ -23,6 +23,7 @@ class Position:
     entry_date: str
     peak_px: float = 0.0     # 保有中の最高値（終値）。トレーリングの損切などに使う
     meta: dict = field(default_factory=dict)
+    days_held: int = 0       # 買ってから終値で評価した営業日数（買った日 = 1）
 
 
 @dataclass
@@ -186,6 +187,7 @@ class PaperBroker(Broker):
 
     def mark(self, close_px: dict[str, float]) -> float:
         for p in self._pos.values():
+            p.days_held += 1
             c = close_px.get(p.code)
             if c and math.isfinite(c):
                 p.peak_px = max(p.peak_px, c)

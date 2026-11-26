@@ -388,3 +388,14 @@ def test_live_shadow_account_runs_alongside(cfg, synth):
     r2 = live.daily(cfg, s, notify=False, today=c.index[850])
     assert {x["code"] for x in r2["positions"]} == {x["code"] for x in r1["orders"]}
     assert len(r2["shadows"]["daily"]["positions"]) >= 1
+
+
+def test_min_hold_days_blocks_early_rank_sells():
+    b = _broker_with({"H1": (100, 1000.0)})
+    b.mark({"H1": 1000.0})  # 買った日 = 1日目
+    scores = {"A": 0.9, "H1": 0.0}
+    px = {"A": 500.0, "H1": 1000.0}
+    p = Params(n_hold=1, keep_rank=1, depth=5, min_hold_days=3, cost=0.0)
+    assert [o for o in decide(b, scores, {"A"}, px, True, False, p) if o.side == "sell"] == []
+    b.mark(px); b.mark(px)  # 3日目
+    assert [o.code for o in decide(b, scores, {"A"}, px, True, False, p) if o.side == "sell"] == ["H1"]

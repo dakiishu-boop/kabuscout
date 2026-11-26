@@ -104,6 +104,54 @@ def confirm(market, S, elig, p0: Params, p1: Params) -> bool:
     return ok_all
 
 
+FINAL_CANDIDATES = [dict(rebalance_every=1, keep_rank=80), dict(rebalance_every=1, keep_rank=120),
+                    dict(rebalance_every=1, keep_rank=50, min_hold_days=3), dict(rebalance_every=1, keep_rank=50, min_hold_days=5),
+                    dict(rebalance_every=1, keep_rank=80, min_hold_days=5)]
+
+
+def final(market, Sl, elig, p0: Params) -> None:
+    """最後の1回の判定（docs/AUTOTRADE.md に実行前に書いた条件）:
+    a) 元のルール1〜3（両方の期間・3つの間引き方）で、t ≥ 2.9
+    b) 現実的な条件のすべてで、2019年以降のシャープか年率が凍結した版より上:
+       100万円で2019年から（コスト0.2%）・100万円で2019年から（コスト0.5%＋不成立日なし）・全期間コスト0.5%・1日遅れ"""
+    S = Sl[0]
+    Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
+    frozen = [sim.run(market, x, elig, p0, start="2008-01-01") for x in Sl]
+    real = [("1M from 2019 cost0.2%", S, {}, dict(start="2019-01-01")),
+            ("1M from 2019 cost0.5%+realfills", S, {"cost": 0.005}, dict(start="2019-01-01", realistic_fills=True)),
+            ("full period cost0.5%", S, {"cost": 0.005}, dict(start="2008-01-01")),
+            ("delay1", Sd, {}, dict(start="2008-01-01"))]
+    fr = {n: sim.run(market, x, elig, replace(p0, **pk), capital=1_000_000, **rk) for n, x, pk, rk in real}
+    passed = []
+    for diff in FINAL_CANDIDATES:
+        p1 = replace(p0, **diff)
+        cand = [sim.run(market, x, elig, p1, start="2008-01-01") for x in Sl]
+        sc, sf = summary(cand[0]), summary(frozen[0])
+        r1 = better(sc["design"], sf["design"]) and better(sc["hold"], sf["hold"])
+        r2 = all(better(summary(c)["all"], summary(f)["all"]) for c, f in zip(cand[1:], frozen[1:]))
+        t = paired_t(cand[0]["equity"], frozen[0]["equity"])
+        rows_ok = True
+        lines = []
+        for n, x, pk, rk in real:
+            rc = sim.run(market, x, elig, replace(p1, **pk), capital=1_000_000, **rk)
+            a, b = (sim.stats(rc, HOLDOUT), sim.stats(fr[n], HOLDOUT)) if rk["start"] < HOLDOUT else (sim.stats(rc), sim.stats(fr[n]))
+            win = a["sharpe"] > b["sharpe"] or a["cagr"] > b["cagr"]
+            rows_ok &= win
+            lines.append(f"   {n:34s} {'win ' if win else 'LOSE'} cand {_fmt(a)}\n   {'':34s}      frozen {_fmt(b)}")
+        ok = r1 and r2 and t >= 2.9 and rows_ok
+        print(f"FINAL {json.dumps(diff)}: rule1 {'OK' if r1 else 'NG'} rule2 {'OK' if r2 else 'NG'} t={t:+.2f} "
+              f"{'OK' if t >= 2.9 else 'NG'} realistic {'OK' if rows_ok else 'NG'} => {'PASS' if ok else 'fail'}")
+        print(f"   cand all {_fmt(sc['all'])}\n   cand 2019+ {_fmt(sc['hold'])}")
+        print("\n".join(lines))
+        if ok:
+            passed.append(diff)
+    # 参考（候補ではない）: 地合いで減らすのをやめる＝投資する量を増やすだけ。リスクの好みの選択肢として数字だけ出す
+    for n, x, pk, rk in real[:2]:
+        r = sim.run(market, x, elig, replace(p0, regime_ma=0, regime_scale=1.0, **pk), capital=1_000_000, **rk)
+        print(f"EXPOSURE no-regime-filter {n}: {_fmt(sim.stats(r))} | frozen {_fmt(sim.stats(fr[n]))}")
+    print("FINAL PASSED " + json.dumps(passed))
+
+
 def small(market, S, elig, p0: Params, p1: Params) -> None:
     """ユーザーの実際の資金（100万円）での成績。kabuscout のジャーナル §82 の「100万円で2019年に開始」と同じ見方。"""
     rows = [("1M from 2019", "2019-01-01", {}, {}),
@@ -133,6 +181,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--model-params", default="")
     ap.add_argument("--only", default="A,B,C")
+    ap.add_argument("--final", action="store_true", help="最後の1回: 売買の回数を抑えた毎日入れ替え（5案・事前に固定）")
     ap.add_argument("--small", default="", help='比較用の口座の Params の差分（JSON）。100万円の口座で凍結した版と並べる')
     ap.add_argument("--confirm", default="", help='候補の Params の差分（JSON）。凍結した版と同じ条件で並べて確認する')
     a = ap.parse_args(argv)
@@ -162,6 +211,10 @@ def main(argv: list[str]) -> None:
         return [sim.run(market, S, elig, p, start="2008-01-01") for S in Sl]
 
     S5 = scores(5)
+    if a.final:
+        final(market, S5, elig, p0)
+        print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")
+        return
     if a.small:
         small(market, S5[0], elig, p0, replace(p0, **json.loads(a.small)))
         print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")

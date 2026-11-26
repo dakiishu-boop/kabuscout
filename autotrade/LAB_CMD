@@ -1,1 +1,1 @@
-python -m autotrade.lab improve --only A --small '{"rebalance_every":1,"keep_rank":50}'
+python -m autotrade.lab improve --only A --final

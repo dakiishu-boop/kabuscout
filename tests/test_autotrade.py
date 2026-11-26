@@ -346,3 +346,19 @@ def test_position_with_vanished_prices_is_cashed_out(synth):
     assert b.positions() == {}
     assert (res["trades"]["reason"] == "値段の途切れ（上場廃止など）").sum() >= 1
     assert res["trades"]["entry_date"].notna().all()
+
+
+def test_liquidity_cap_and_withdrawals(synth):
+    o, h, l, c, v, mkt = synth
+    T, N = c.shape
+    S = np.random.default_rng(2).random((T, N))
+    turn = np.full((T, N), 2_000_000.0)  # どの銘柄も1日の売買代金200万円
+    m = _mk_market(c, o, turn20=turn)
+    p = Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20, max_adv_frac=0.05)  # 1注文10万円まで
+    res = sim.run(m, S, np.ones((T, N), bool), p)
+    for f in res["broker"].fills:
+        if f.side == "buy":
+            assert f.shares * f.raw_px <= 100_000 * 1.05
+    w = sim.run(m, S, np.ones((T, N), bool), Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20),
+                withdraw_above=900_000)
+    assert len(w["equity"]) == T and (w["equity"] > 0).all()

@@ -160,7 +160,8 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
         weak = bool(market.weak_ma.get(p.regime_ma, market.weak)[i]) if p.regime_ma else False
         danger = _danger(cfg)  # 監理・整理銘柄と上場廃止予定（kabuscout の毎日の実行が JPX から取って保存したもの）
         elig -= set(danger)
-        orders = decide(b, scores, elig, crow, reb, weak, p)
+        orders = decide(b, scores, elig, crow, reb, weak, p,
+                        _Row(market.turn20[i], cix) if market.turn20 is not None else None)
         have = {o.code for o in orders}
         from .broker import Order
         orders += [Order(c, "sell", ps.shares, crow.get(c) or ps.entry_px, danger[c]) for c, ps in b.positions().items()

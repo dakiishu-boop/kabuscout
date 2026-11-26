@@ -25,6 +25,7 @@ class Params:
     regime_scale: float = 1.0
     lot: int = 100
     cost: float = 0.002          # 往復の取引コスト（kabuscout の research.cost と同じ既定値）
+    max_adv_frac: float = 0.0    # 1注文を「20日平均売買代金 × この割合」までにする（0 なら上限なし。自分の注文で値段を動かさないため）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -35,7 +36,7 @@ def target_count(p: Params, weak: bool) -> int:
 
 
 def decide(broker: PaperBroker, scores: dict[str, float], eligible: set[str], close_px: dict[str, float],
-           rebalance: bool, weak: bool, p: Params) -> list[Order]:
+           rebalance: bool, weak: bool, p: Params, turnover=None) -> list[Order]:
     """scores: 点数（高いほど良い。保有中の銘柄は対象外になっていても点数があれば入れる）。
     eligible: 新規に買ってよい銘柄。close_px: 今日の終値（実際の株価）。"""
     pos = broker.positions()
@@ -79,7 +80,11 @@ def decide(broker: PaperBroker, scores: dict[str, float], eligible: set[str], cl
         c = close_px.get(code)
         if not (c and c > 0 and math.isfinite(c)):
             continue
-        n = int(min(slot_value, avail) / (c * (1 + half)) // p.lot) * p.lot
+        cap = slot_value
+        if p.max_adv_frac and turnover is not None:
+            t = turnover.get(code)
+            cap = min(cap, (t or 0.0) * p.max_adv_frac)
+        n = int(min(cap, avail) / (c * (1 + half)) // p.lot) * p.lot
         if n <= 0:
             continue  # 100株で買えない値段・現金不足
         orders.append(Order(code, "buy", n, c, f"順位{rank[code] + 1}"))

@@ -121,6 +121,21 @@ def main(argv: list[str]) -> None:
     print(f"   design {_fmt(summary(frozen[0])['design'])}")
     print(f"   2019+  {_fmt(summary(frozen[0])['hold'])}")
     print(f"   all    {_fmt(summary(frozen[0])['all'])}")
+    # 規模の現実性: 複利で口座が大きくなると、1注文が小型株の売買代金に対して大きすぎる（値段を動かす）。上限を付けて測る
+    for frac in (0.01, 0.03):
+        r = sim.run(market, S5[0], elig, replace(p0, max_adv_frac=frac), start="2008-01-01")
+        print(f"LIQ cap {frac:.0%} of 20d turnover: design {_fmt(summary(r)['design'])}")
+        print(f"LIQ cap {frac:.0%} of 20d turnover: 2019+  {_fmt(summary(r)['hold'])}")
+        print(f"LIQ cap {frac:.0%} of 20d turnover: all    {_fmt(summary(r)['all'])}")
+    for cap in (3_000_000, 10_000_000):  # 複利をやめ、この額を超えた分は毎年末に引き出すとみなす（1注文の大きさを抑える）
+        r = sim.run(market, S5[0], elig, p0, start="2008-01-01", capital=1_000_000, withdraw_above=cap)
+        print(f"LIQ withdraw above {cap:,}: all {_fmt(summary(r)['all'])} | 2019+ {_fmt(summary(r)['hold'])}")
+    tr = frozen[0]["trades"]
+    lr = np.log1p(tr["net"]).sort_values(ascending=False)
+    for q in (0.01, 0.05):
+        k = max(1, int(len(lr) * q))
+        print(f"CONC top {q:.0%} trades by return: share of total log-return {lr.iloc[:k].sum() / lr.sum():.1%}; "
+              f"rest mean {np.expm1(lr.iloc[k:].mean()):+.2%} per trade")
     passed = []
     if "A" in only:
         for reb, keep in ((1, 30), (1, 50), (2, 30), (3, 30)):

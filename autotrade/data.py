@@ -89,7 +89,8 @@ def build_core(cfg: dict, px: dict, mkt: pd.Series, fac: pd.DataFrame, splits, d
                     close=raw_c.ffill(limit=5).to_numpy("float64"),
                     splits=(splits.to_numpy("float64") if splits is not None else np.ones(c.shape)),
                     div=(div * fac).to_numpy("float64") if div is not None else None, weak=ma[200], weak_ma=ma,
-                    high=(h * fac).to_numpy("float32"), low=(l * fac).to_numpy("float32"), volume=v.to_numpy("float32"))
+                    high=(h * fac).to_numpy("float32"), low=(l * fac).to_numpy("float32"), volume=v.to_numpy("float32"),
+                    turn20=feats["turn20"].to_numpy("float32"))
     return ds, market, dict(ma=ma, ii=ii, jj=jj, shape=c.shape, mkt=mkt)
 
 

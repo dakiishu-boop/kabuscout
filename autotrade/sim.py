@@ -44,6 +44,7 @@ class Market:
     high: np.ndarray | None = None    # T×N（約定できたかの判定・取引の点検に使う）
     low: np.ndarray | None = None
     volume: np.ndarray | None = None
+    turn20: np.ndarray | None = None  # T×N 20日平均売買代金（円）
 
 
 # 上場企業の倒産件数（年）。生存者バイアスの検証で、保有中の銘柄が倒産する確率の目安に使う。
@@ -55,14 +56,16 @@ LISTED = 3600
 def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, capital: float = 1_000_000,
         start: str | None = None, end: str | None = None, dividends: bool = False,
         crash_mult: float = 0.0, seed: int = 0, realistic_fills: bool = False,
-        lot_schedule: list | None = None) -> dict:
+        lot_schedule: list | None = None, withdraw_above: float | None = None) -> dict:
     """scores: T×N の点数（NaN = 点数なし）。eligible: T×N の新規に買ってよいか。
     crash_mult > 0: 生存者バイアスの検証。保有中の銘柄が1日あたり「その年の倒産率 × crash_mult ÷ 250」の確率で
     倒産したとみなし、その日の終値の5%で翌朝売る（実際のデータには倒産した銘柄が無いため）。
     realistic_fills: 出来高0の日・高値と安値が同じ日（ストップ高・安の張り付きなど）は寄付で売買できないとみなす
     （買いは取り消し、売りは翌日に回す）。
     lot_schedule: [(この日より前, 単元株数), ...]。例 [("2018-10-01", 1000)] = 2018年10月より前は全銘柄1,000株単位。
-    値段が6営業日以上途切れた保有（上場廃止など）は、最後の終値で売ったものとして現金にする。"""
+    値段が6営業日以上途切れた保有（上場廃止など）は、最後の終値で売ったものとして現金にする。
+    withdraw_above: 毎年の最終営業日に、資産がこの額を超えていれば超えた分の現金を引き出す（利息0で別に持つ）。
+    1注文の大きさを抑えた（複利で口座が巨大にならない）場合の成績を見るため。資産の推移は「口座＋引き出した分」。"""
     from .broker import Order
     from dataclasses import replace as _replace
     rng = np.random.default_rng(seed)
@@ -79,6 +82,7 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     if realistic_fills and market.volume is not None:
         blocked = (market.volume <= 0) | (market.high <= market.low)
     last_close: dict[str, float] = {}
+    withdrawn = 0.0
     sched = sorted((pd.Timestamp(x), int(n)) for x, n in (lot_schedule or []))
     for i in range(i0, i1):
         d = cal[i].strftime("%Y-%m-%d")
@@ -124,7 +128,12 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
             elif c in last_close:  # 6営業日以上値段が無い = 上場廃止など。最後の終値で現金にする
                 b.force_sell(d, c, last_close.pop(c), "値段の途切れ（上場廃止など）")
         eq = b.mark(crow)
-        curve.append((cal[i], eq))
+        if withdraw_above and (i + 1 >= len(cal) or cal[i + 1].year != cal[i].year) and eq > withdraw_above:
+            take = min(b.cash(), eq - withdraw_above)
+            b._cash -= take
+            withdrawn += take
+            eq -= take
+        curve.append((cal[i], eq + withdrawn))
         expo.append(1 - b.cash() / eq if eq > 0 else 0.0)
         if i + 1 >= i1:
             break
@@ -142,7 +151,8 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
         else:
             sc = {c: 0.0 for c in b.positions()}
             el = set()
-        orders = decide(b, sc, el, crow, reb, bool(weak[i]), pi)
+        orders = decide(b, sc, el, crow, reb, bool(weak[i]), pi,
+                        _Row(market.turn20[i], cix) if market.turn20 is not None else None)
         if crashed:  # 倒産した銘柄は、入れ替え日でなくても翌朝売る（倒産後の値段で）
             have = {o.code for o in orders}
             orders += [Order(c, "sell", b.positions()[c].shares, v, "倒産（検証）") for c, v in crashed.items()

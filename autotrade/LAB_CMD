@@ -1,1 +1,1 @@
-python -m autotrade.lab verify
+python -m autotrade.lab improve

@@ -8,14 +8,20 @@ strategy:
   keep_rank: 30           # 持っている銘柄は、この順位以内なら持ち続ける
   depth: 25               # 新規に買う候補を何位まで見るか
   stop_loss: 0.0          # 損切は使わない（研究では成績が下がった）
-  regime_ma: 75           # 日経平均が75日線を下回ったら…
-  regime_scale: 0.5       # …持つ数を半分にする（5 × 0.5 = 2.5 → Python の丸めで2銘柄）
+  # 弱い相場（日経平均が75日線の下）でも持つ数を減らさない（2026-11-26 にユーザーの依頼「もっと年率」で切り替え）。
+  # 過去の検証で年率はすべての条件で上がったが、最大下落は −41〜−58%（減らす設定は −28〜−40%）。シャープはほぼ同じ＝投資量を増やしただけ。
+  # 下落を抑えたいときは regime_ma: 75・regime_scale: 0.5 に戻す（比較用の口座 frozen と同じ形）。docs/AUTOTRADE.md
+  regime_ma: 0
+  regime_scale: 1.0
   lot: 100
   cost: 0.002
 # 比較用の口座（売買の形だけが違う仮想の口座。本番の口座と同じAIの点数で並べて動かし、前向きのデータでどちらが良いかを決める）
-# daily: 毎日入れ替え・50位以内は持ち続ける。過去の検証では年率が高いが、売買が2倍で、コスト0.5%では本番の形に負けた（docs/AUTOTRADE.md）
+# 値は本番の strategy への差分。risk は口座ごとの安全装置（過去の検証の最悪の最大下落 + 10ポイント）
+# frozen: 2026-11-26 に凍結した版（弱い相場では2銘柄に減らす）。過去の検証の最悪の最大下落 −40.4%
+# daily: 毎日入れ替え・50位以内は持ち続ける（凍結した版がもと）。年率は高いが売買が2倍で、コスト0.5%では凍結した版に負けた
 shadow_accounts:
-  daily: {rebalance_every: 1, keep_rank: 50}
+  frozen: {regime_ma: 75, regime_scale: 0.5, risk: {kill_drawdown: 0.50}}
+  daily: {rebalance_every: 1, keep_rank: 50, regime_ma: 75, regime_scale: 0.5, risk: {kill_drawdown: 0.65}}
 model:
   horizons: [5]           # 5営業日後の順位を学習する（設計期間で20営業日・両方の平均より良かった）
   seeds: 1
@@ -25,5 +31,7 @@ risk:                     # 注文直前の安全装置（autotrade/risk.py）
   max_order_frac: 0.35
   max_price_move: 0.3
   max_orders_per_day: 20
-  kill_drawdown: 0.35
+  # 最高値からこれだけ下がったら新規の買いを止める（売りは通す・人が戻すまで止まる）。
+  # 過去の検証の最悪の最大下落（−58.0%）+ 10ポイント。過去の範囲の下げでは止まらず、それを超える想定外の下げで止まる
+  kill_drawdown: 0.68
   data_max_age_days: 3

@@ -223,3 +223,22 @@ def test_paper_broker_fills_next_open(cfg):
     br.submit([trader.Order("AAA", "sell", 5, 100.0)], str(nxt.date()))
     br.settle(p)
     assert br.positions() == {}
+
+
+def test_paper_broker_survives_split(cfg):
+    """4対1の分割の後も、ペーパー口座の評価額は続いていて、実際の株数は4倍になり、余計な買いは出ない。"""
+    p = make_panel()
+    split = pd.Timestamp("2008-06-02")
+    p.raw.loc[p.raw.index < split, "AAA"] = p.close.loc[p.close.index < split, "AAA"] * 4  # 分割前の実際の値段は4倍
+    br = B.make(cfg, "paper")
+    br.submit([trader.Order("AAA", "buy", 5, 400.0)], "2008-01-31")
+    br.settle(p.upto(pd.Timestamp("2008-05-30")))
+    before = br.mark(p.upto(pd.Timestamp("2008-05-30")))["equity"]
+    assert br.positions()["AAA"] == pytest.approx(5)
+    after = br.mark(p.upto(split))["equity"]
+    move = p.close.at[split, "AAA"] / p.close.at[pd.Timestamp("2008-05-30"), "AAA"] - 1
+    assert after == pytest.approx(before + br.s["units"]["AAA"] * p.close.at[pd.Timestamp("2008-05-30"), "AAA"] * move)
+    assert br.positions()["AAA"] == pytest.approx(20)
+    px = {"AAA": float(p.raw.at[split, "AAA"])}
+    w = {"AAA": 20 * px["AAA"] / after}
+    assert trader.plan_orders(w, br.positions(), px, after, cfg) == []

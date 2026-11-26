@@ -67,7 +67,8 @@ strategies:
 # 自動売買（docs/US.md「自動売買」）。既定は手元のペーパー口座だけ。実際のお金は動かない
 trading:
   # 既定は「S&P500 を持ち続ける」。2008〜2026年の検証で、売買する戦略はどれも手数料・税金の後で SPY に負けた（ジャーナル §90）。
-  # 毎月、入金や配当で増えた現金も SPY に回す。ほかの戦略（trend_spy・etf_rotation・stock_mom・blend・gem）も名前を書けば使える
+  # 入金などで増えた現金は、資金の5%（backtest.rebalance_band）を超えたら月末の組み直しで SPY に回す。
+  # ほかの戦略（trend_spy・etf_rotation・stock_mom・blend・gem）も名前を書けば使える
   strategy: hold_spy
   broker: paper               # paper（手元の作り物の口座） / alpaca（未検証のひな形）
   # 実際のお金で発注するには、ここを true にし、さらに環境変数 USSCOUT_LIVE=1 が必要（両方そろわないと拒否）

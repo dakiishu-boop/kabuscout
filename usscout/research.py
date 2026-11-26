@@ -86,9 +86,10 @@ def run_all(cfg: dict, quick: bool = False) -> dict:
 
     if not quick:
         # 2. ランダムに選んだ場合（個別株モメンタムと同じ条件を満たす銘柄から、順位の代わりに乱数）
-        rnd = [metrics.cagr(lab.run("stock_mom", "gross", end=R, extra={"score": "random"}, seed=sd).equity) for sd in range(20)]
+        rnd = [metrics.cagr(lab.run("stock_mom", "gross", end=R, extra={"score": "random"}, seed=sd).equity) for sd in range(100)]
         mom = rep["research"]["gross"]["stock_mom"]["cagr"]
         rep["random_stock_mom_gross"] = {"cagr_median": float(np.median(rnd)), "cagr_min": float(min(rnd)),
+                                         "cagr_p10": float(np.percentile(rnd, 10)), "cagr_p90": float(np.percentile(rnd, 90)),
                                          "cagr_max": float(max(rnd)), "momentum_beats": int(sum(x < mom for x in rnd)), "n": len(rnd)}
         # 3. 判定日をずらす（月末の0〜4営業日前）: たまたま月末が良かっただけではないか
         rep["offsets_net_mmf"] = {}
@@ -161,7 +162,8 @@ def markdown(rep: dict) -> str:
     if "random_stock_mom_gross" in rep:
         r = rep["random_stock_mom_gross"]
         out += [f"- 個別株モメンタム（手数料なし）とランダムに選んだ場合（{r['n']}通り）: ランダムの年率 中央値 {_p(r['cagr_median'])}"
-                f"（{_p(r['cagr_min'])}〜{_p(r['cagr_max'])}）。モメンタムが上回ったのは {r['momentum_beats']}/{r['n']}", ""]
+                f"（最小 {_p(r['cagr_min'])}・下位10% {_p(r.get('cagr_p10'))}・上位10% {_p(r.get('cagr_p90'))}・最大 {_p(r['cagr_max'])}）。"
+                f"モメンタムが上回ったのは {r['momentum_beats']}/{r['n']}", ""]
         out += ["## 判定日を月末の0〜4営業日前にずらした場合（米ドルMMF・研究期間）", "", "| 戦略 | 年率の最小 | 中央値 | 最大 |", "|---|---|---|---|"]
         for n, v in rep["offsets_net_mmf"].items():
             out.append(f"| {L.get(n, n)} | {_p(v['min'])} | {_p(v['median'])} | {_p(v['max'])} |")

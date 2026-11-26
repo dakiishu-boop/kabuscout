@@ -147,8 +147,8 @@ def checks(cfg: dict, orders: list[Order], w: dict, equity: float, peak: float, 
     for o in orders:
         if o.side == "buy" and o.value > lim * equity:
             blocked.append(f"{o.symbol} の買い {o.value:,.0f} ドルが資金の {lim:.0%} を超える")
-        if o.side == "buy" and o.symbol in p.raw:
-            r = p.raw[o.symbol].loc[:s].dropna().iloc[-2:]
+        if o.side == "buy" and o.symbol in p.close:  # 調整後の値段で見る（分割での値段の変化を誤って止めない）
+            r = p.close[o.symbol].loc[:s].dropna().iloc[-2:]
             if len(r) == 2 and abs(r.iloc[1] / r.iloc[0] - 1) > 0.5:
                 blocked.append(f"{o.symbol} の値段が前日から50%以上動いている（データの誤りの疑い）")
     if peak > 0 and equity < (1 - float(t.get("stop_dd", 0.35))) * peak:
@@ -165,7 +165,7 @@ def rebalance(cfg: dict, strategy: str | None = None, broker: str | None = None,
     p, s, name, w, _ = targets(cfg, strategy)
     br = B.make(cfg, broker)
     fills = br.settle(p) if execute else []
-    acct = br.mark(p) if hasattr(br, "mark") and execute else br.account()
+    acct = br.mark(p, save=execute) if hasattr(br, "mark") else br.account()
     pos = br.positions()
     px = {k: float(p.raw[k].loc[:s].dropna().iloc[-1]) for k in set(pos) | set(w) if k in p.raw and len(p.raw[k].loc[:s].dropna())}
     eq = acct.get("equity") or acct["cash"] + sum(q * px.get(k, 0) for k, q in pos.items())

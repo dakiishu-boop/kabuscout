@@ -379,7 +379,7 @@ def test_live_shadow_account_runs_alongside(cfg, synth):
     s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
     s["strategy"].update(n_hold=4, keep_rank=8, regime_ma=0)
     s["risk"]["max_order_value"] = 1e9
-    s["shadow_accounts"] = {"daily": {"rebalance_every": 1, "keep_rank": 12}}
+    s["shadow_accounts"] = {"daily": {"rebalance_every": 1, "keep_rank": 12, "risk": {"kill_drawdown": 0.6}}}
     save(850)
     r1 = live.daily(cfg, s, notify=False, today=c.index[849])
     assert "比較用の口座「daily」" in r1["text"] and "daily" in r1["shadows"]

@@ -105,7 +105,10 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
     rep = _account(cfg, s, params_of(s), "state.json", "report", ds, market, cache, today)
     for name, diff in (s.get("shadow_accounts") or {}).items():
         try:
-            r = _account(cfg, s, Params(**{**s["strategy"], **diff}), f"state_{name}.json", f"report_{name}", ds, market, cache, today)
+            diff = dict(diff)
+            risk = diff.pop("risk", None)  # 比較用の口座ごとの安全装置（無ければ本番と同じ）
+            s2 = {**s, "risk": {**s.get("risk", {}), **(risk or {})}}
+            r = _account(cfg, s2, Params(**{**s["strategy"], **diff}), f"state_{name}.json", f"report_{name}", ds, market, cache, today)
             line = (f"比較用の口座「{name}」（{diff}）: 資産 {r['equity']:,.0f}円（{r['equity'] / s['account']['capital'] - 1:+.1%}）・"
                     f"保有 {len(r['positions'])}銘柄・翌朝の注文 {len(r['orders'])}件")
             rep["text"] += "\n" + line

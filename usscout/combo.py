@@ -101,10 +101,12 @@ def run(cfg: dict, jp_path: Path | None = None) -> dict:
     jp_tax = metrics.after_tax(jp, cfg["tax"]["rate"], cfg["tax"]["carry_years"])
     rep["jp_alone"] = {"cagr": metrics.cagr(jp), "after_tax": metrics.cagr(jp_tax), "max_dd": metrics.max_dd(jp),
                        "worst_year": float(metrics.yearly(jp).min())}
-    for us_name in US_PARTS:
-        eq = lab.run(us_name, "net_mmf", start=str(jp.index[0].date()), end=str(end.date())).equity
+    for us_name in US_PARTS + ("hold_spy_taxable",):
+        strat = us_name.replace("_taxable", "")
+        eq = lab.run(strat, "net_mmf", start=str(jp.index[0].date()), end=str(end.date())).equity
         us_jpy = metrics.to_jpy(eq, fx, cfg["costs"].get("fx_spread_jpy", 0)) * float(jp.iloc[0])
-        taxed = not us_name.startswith("hold_")
+        # 持ち続ける S&P500 は NISA（非課税）。比較のため、同じものを特定口座で持った場合（hold_spy_taxable）も出す
+        taxed = not strat.startswith("hold_") or us_name.endswith("_taxable")
         for sh in SHARES:
             pre = combine(jp, us_jpy, sh, us_taxed=taxed, cfg=dict(cfg, tax=dict(cfg["tax"], rate=0.0)), fx=fx)
             post = combine(jp, us_jpy, sh, us_taxed=taxed, cfg=cfg, fx=fx)
@@ -124,7 +126,8 @@ def markdown(rep: dict) -> str:
     out = [f"# 日本株のAI＋米国株の組み合わせ（円建て・{rep['start']}〜{rep['end']}・毎年初めに分け方を戻す）", "",
            f"日本株のAIだけ（特定口座）: 年率 {p(j['cagr'])}・税引き後 {p(j['after_tax'])}・最大下落 {p(j['max_dd'])}・最悪の年 {p(j['worst_year'])}", "",
            "| 米国株の側 | 米国の割合 | 年率（税引き前） | 税引き後 | 最大下落 | 最悪の年 | プラスの年 |", "|---|---|---|---|---|---|---|"]
-    name = {"hold_spy": "S&P500を持ち続ける（NISA）", "trend_spy": "SPY＋10か月平均の逃避（特定口座）"}
+    name = {"hold_spy": "S&P500を持ち続ける（NISA）", "trend_spy": "SPY＋10か月平均の逃避（特定口座）",
+            "hold_spy_taxable": "S&P500を持ち続ける（特定口座・比較用）"}
     for r in rep["rows"]:
         out.append(f"| {name[r['us']]} | {r['us_share']:.0%} | {p(r['cagr'])} | {p(r['after_tax'])} | {p(r['max_dd'])} | {p(r['worst_year'])} | {r['pos_years']:.0%} |")
     out += ["", "米国の割合 0% は日本株のAIだけ、100% は米国株だけ。日本株のAIの成績は kabuscout の過去ペーパートレード（ウォークフォワード）。",

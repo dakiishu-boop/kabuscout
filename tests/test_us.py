@@ -296,7 +296,7 @@ def test_alpaca_requests(monkeypatch):
     assert h == {"APCA-API-KEY-ID": "KEY", "APCA-API-SECRET-KEY": "SECRET"}
     assert body == {"symbol": "SPY", "qty": "2", "side": "buy", "type": "market", "time_in_force": "opg",
                     "client_order_id": "usscout-2026-10-30-SPY-buy"}
-    assert calls[3][3]["qty"] == "1.5" and calls[3][3]["side"] == "sell"
+    assert calls[3][3]["qty"] == "1" and calls[3][3]["side"] == "sell"  # opg は整数の株数だけ
 
 
 def test_combo_extremes(cfg):

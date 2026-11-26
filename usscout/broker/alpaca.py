@@ -49,7 +49,7 @@ class AlpacaBroker(Broker):
     def submit(self, orders: list[Order], signal_date: str) -> list[dict]:
         out = []
         for o in orders:
-            qty = int(o.qty) if o.side == "buy" else o.qty
+            qty = int(o.qty)  # 寄付の成行（opg）は整数の株数だけ。売りの端数（あれば）は残る
             if qty <= 0:
                 continue
             body = {"symbol": o.symbol, "qty": str(qty), "side": o.side, "type": "market", "time_in_force": o.tif,

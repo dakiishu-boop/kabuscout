@@ -12,6 +12,10 @@ strategy:
   regime_scale: 0.5       # …持つ数を半分にする（5 × 0.5 = 2.5 → Python の丸めで2銘柄）
   lot: 100
   cost: 0.002
+# 比較用の口座（売買の形だけが違う仮想の口座。本番の口座と同じAIの点数で並べて動かし、前向きのデータでどちらが良いかを決める）
+# daily: 毎日入れ替え・50位以内は持ち続ける。過去の検証では年率が高いが、売買が2倍で、コスト0.5%では本番の形に負けた（docs/AUTOTRADE.md）
+shadow_accounts:
+  daily: {rebalance_every: 1, keep_rank: 50}
 model:
   horizons: [5]           # 5営業日後の順位を学習する（設計期間で20営業日・両方の平均より良かった）
   seeds: 1

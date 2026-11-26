@@ -362,3 +362,29 @@ def test_liquidity_cap_and_withdrawals(synth):
     w = sim.run(m, S, np.ones((T, N), bool), Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20),
                 withdraw_above=900_000)
     assert len(w["equity"]) == T and (w["equity"] > 0).all()
+
+
+def test_live_shadow_account_runs_alongside(cfg, synth):
+    """比較用の口座（shadow_accounts）は別の状態ファイルで動き、本番の口座の結果を変えない。"""
+    from kabuscout.data import PriceStore
+    from autotrade import live
+    o, h, l, c, v, mkt = synth
+    def save(n):
+        P = {k: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if k != "volume" else 0.0)})
+             for k, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
+        P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
+        P["dividends"] = pd.DataFrame()
+        PriceStore(cfg["data"]["price_dir"]).save(P)
+    s = live.load_settings()
+    s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
+    s["strategy"].update(n_hold=4, keep_rank=8, regime_ma=0)
+    s["risk"]["max_order_value"] = 1e9
+    s["shadow_accounts"] = {"daily": {"rebalance_every": 1, "keep_rank": 12}}
+    save(850)
+    r1 = live.daily(cfg, s, notify=False, today=c.index[849])
+    assert "比較用の口座「daily」" in r1["text"] and "daily" in r1["shadows"]
+    assert (live.state_dir(cfg) / "state_daily.json").exists()
+    save(851)
+    r2 = live.daily(cfg, s, notify=False, today=c.index[850])
+    assert {x["code"] for x in r2["positions"]} == {x["code"] for x in r1["orders"]}
+    assert len(r2["shadows"]["daily"]["positions"]) >= 1

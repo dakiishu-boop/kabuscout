@@ -1,1 +1,3 @@
-python -m autotrade.lab improve --confirm '{"rebalance_every":1,"keep_rank":50}'
+pip install -q pytest==8.3.3
+python -m pytest -q
+python -m autotrade.lab live

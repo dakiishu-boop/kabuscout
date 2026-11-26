@@ -94,14 +94,37 @@ def _busdays_between(a: pd.Timestamp, b: pd.Timestamp) -> int:
 
 
 def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = None) -> dict:
-    p = params_of(s)
-    sd = state_dir(cfg)
-    st_path = sd / "state.json"
+    """本番の口座（state.json）と、比較用の口座（config の shadow_accounts。state_<名前>.json）を同じデータで1日進める。
+    比較用の口座は売買の形だけが違い、AIの点数は共通。通知は本番の口座のレポートに比較用の口座の1行を足して送る。"""
     from kabuscout.data import PriceStore
     proxy = cfg["universe"]["market_proxy"]
     end = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
     start = (end - pd.Timedelta(days=900)).strftime("%Y-%m-%d")  # 特徴量に1年強の履歴が要る（データの最終日から数える）
     ds, market, masks = D.build(cfg, horizons=(), start=start)
+    cache: dict = {}
+    rep = _account(cfg, s, params_of(s), "state.json", "report", ds, market, cache, today)
+    for name, diff in (s.get("shadow_accounts") or {}).items():
+        try:
+            r = _account(cfg, s, Params(**{**s["strategy"], **diff}), f"state_{name}.json", f"report_{name}", ds, market, cache, today)
+            line = (f"比較用の口座「{name}」（{diff}）: 資産 {r['equity']:,.0f}円（{r['equity'] / s['account']['capital'] - 1:+.1%}）・"
+                    f"保有 {len(r['positions'])}銘柄・翌朝の注文 {len(r['orders'])}件")
+            rep["text"] += "\n" + line
+            rep.setdefault("shadows", {})[name] = dict(equity=r["equity"], positions=r["positions"], orders=r["orders"])
+        except Exception as e:  # 比較用の口座が失敗しても本番の口座は止めない
+            log.warning("比較用の口座 %s の処理に失敗: %s", name, e)
+    sd = state_dir(cfg)
+    (sd / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
+    (sd / "report.md").write_text(rep["text"])
+    print(rep["text"])
+    if notify:
+        send(cfg, rep)
+    return rep
+
+
+def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, ds, market, cache: dict,
+             today: pd.Timestamp | None) -> dict:
+    sd = state_dir(cfg)
+    st_path = sd / state_name
     cal = market.cal
     cix = {c: j for j, c in enumerate(market.codes)}
     if st_path.exists():
@@ -112,7 +135,7 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
         st = dict(last_date=None, since_reb=10 ** 6, equity=[], peak=s["account"]["capital"], log=[])
         b = PaperBroker(s["account"]["capital"], p.cost, p.lot)
         guard = RiskGuard(RiskLimits(**s.get("risk", {})))
-        log.info("自動売買の口座を新しく作りました（資金 %s円）", f"{s['account']['capital']:,}")
+        log.info("自動売買の口座 %s を新しく作りました（資金 %s円）", state_name, f"{s['account']['capital']:,}")
     last = pd.Timestamp(st["last_date"]) if st["last_date"] else cal[-2]
     todo = [i for i, d in enumerate(cal) if d > last]
     events = []
@@ -151,9 +174,10 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
         reb = st["since_reb"] >= p.rebalance_every
         rows = ds[ds["date"] == cal[i]]
         if reb and len(rows):
-            bundle = load_model(cfg, s)
-            sc = score(bundle, rows)
-            scores = dict(zip(rows["code"], sc))
+            if "scores" not in cache:  # AIの点数はすべての口座で共通（1日に1回だけ計算）
+                bundle = load_model(cfg, s)
+                cache["scores"] = dict(zip(rows["code"], score(bundle, rows)))
+            scores = cache["scores"]
             elig = set(rows.loc[rows["elig"], "code"])
         else:
             scores, elig, reb = {c: 0.0 for c in b.positions()}, set(), False
@@ -178,11 +202,7 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1))
     tmp.replace(st_path)
     rep = report(st, b, crow, orders, blocked, events, cal[i], s)
-    (sd / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
-    (sd / "report.md").write_text(rep["text"])
-    print(rep["text"])
-    if notify:
-        send(cfg, rep)
+    (sd / f"{report_name}.md").write_text(rep["text"])
     return rep
 
 

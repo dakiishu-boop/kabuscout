@@ -5,6 +5,10 @@
 name: us-research
 
 on:
+  # 一時的: 作業ブランチへの push で1回動かして、クラウドで動くことを確かめる（確認後に消す）
+  push:
+    branches: [claude/hopeful-einstein-gup9y9]
+    paths: [".github/workflows/us-research.yml"]
   workflow_dispatch:
     inputs:
       quick:

@@ -1,5 +1,6 @@
 """autotrade（自動売買）のテスト。作り物のデータだけを使う（ネット・実データ・APIキーなし）。"""
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -278,3 +279,34 @@ def test_crash_injection_lowers_returns(synth):
     tr = hit["trades"]
     crash = tr[tr["reason"] == "倒産（検証）"]
     assert len(crash) > 0 and (crash["net"] < -0.9).all()
+
+
+def test_live_skips_and_sells_delisting_risk(cfg, synth):
+    """監理・整理銘柄（alerts.json）は買わず、持っていれば翌朝売る。"""
+    from kabuscout.data import PriceStore
+    from autotrade import live
+    o, h, l, c, v, mkt = synth
+    def save(n):
+        P = {k: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if k != "volume" else 0.0)})
+             for k, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
+        P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
+        P["dividends"] = pd.DataFrame()
+        PriceStore(cfg["data"]["price_dir"]).save(P)
+    s = live.load_settings()
+    s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
+    s["strategy"].update(n_hold=4, keep_rank=40, regime_ma=0)
+    s["risk"]["max_order_value"] = 1e9
+    save(850)
+    r1 = live.daily(cfg, s, notify=False, today=c.index[849])
+    first = r1["orders"][0]["code"]
+    save(851)
+    live.daily(cfg, s, notify=False, today=c.index[850])
+    alerts = Path(cfg["data"]["db_path"]).parent / "alerts.json"
+    alerts.write_text(json.dumps({"date": "x", "codes": {first: "監理・整理銘柄", "1039": "上場廃止予定"}}))
+    st = live.state_dir(cfg) / "state.json"
+    d = json.loads(st.read_text()); d["since_reb"] = 99; st.write_text(json.dumps(d))  # 入れ替え日にする
+    save(852)
+    r3 = live.daily(cfg, s, notify=False, today=c.index[851])
+    sells = {x["code"]: x["reason"] for x in r3["orders"] if x["side"] == "sell"}
+    assert sells.get(first) == "監理・整理銘柄"
+    assert all(x["code"] not in (first, "1039") for x in r3["orders"] if x["side"] == "buy")

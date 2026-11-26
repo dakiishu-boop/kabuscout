@@ -5,15 +5,15 @@ account:
 strategy:
   n_hold: 8               # 同時に持つ銘柄数
   rebalance_every: 5      # 何営業日ごとに入れ替えるか
-  keep_rank: 24           # 持っている銘柄は、この順位以内なら持ち続ける
+  keep_rank: 48           # 持っている銘柄は、この順位以内なら持ち続ける
   depth: 40               # 新規に買う候補を何位まで見るか
-  stop_loss: 0.0
-  regime_ma: 0
-  regime_scale: 1.0
+  stop_loss: 0.0          # 損切は使わない（研究では成績が下がった）
+  regime_ma: 75           # 日経平均が75日線を下回ったら…
+  regime_scale: 0.5       # …持つ数を半分（8 → 4銘柄）にする
   lot: 100
   cost: 0.002
 model:
-  horizons: [5, 20]       # 5営業日後・20営業日後の順位を学習し、2つの順位の平均で並べる
+  horizons: [5]           # 5営業日後の順位を学習する（設計期間で20営業日・両方の平均より良かった）
   seeds: 1
   sample_every: 3
 risk:                     # 注文直前の安全装置（autotrade/risk.py）

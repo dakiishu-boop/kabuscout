@@ -147,7 +147,13 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
         else:
             scores, elig, reb = {c: 0.0 for c in b.positions()}, set(), False
         weak = bool(market.weak_ma.get(p.regime_ma, market.weak)[i]) if p.regime_ma else False
+        danger = _danger(cfg)  # 監理・整理銘柄と上場廃止予定（kabuscout の毎日の実行が JPX から取って保存したもの）
+        elig -= set(danger)
         orders = decide(b, scores, elig, crow, reb, weak, p)
+        have = {o.code for o in orders}
+        from .broker import Order
+        orders += [Order(c, "sell", ps.shares, crow.get(c) or ps.entry_px, danger[c]) for c, ps in b.positions().items()
+                   if c in danger and c not in have]  # 持っている銘柄が上場廃止の恐れになったら翌朝売る
         now = today or pd.Timestamp(datetime.now(JST).date())
         age = _busdays_between(cal[i], now)
         orders, blocked = guard.check(orders, eq, st["peak"], {c: crow.get(c) for c in {o.code for o in orders}}, age)
@@ -197,6 +203,14 @@ def report(st, b: PaperBroker, crow, orders, blocked, events, date, s) -> dict:
                 positions=[dict(code=p.code, shares=p.shares, entry=p.entry_px) for p in b.positions().values()],
                 orders=[dict(code=o.code, side=o.side, shares=o.shares, ref=o.ref_px, reason=o.reason) for o in orders],
                 blocked=blocked, text="\n".join(lines))
+
+
+def _danger(cfg: dict) -> dict[str, str]:
+    p = Path(cfg["data"]["db_path"]).parent / "alerts.json"
+    try:
+        return json.loads(p.read_text())["codes"] if p.exists() else {}
+    except Exception:
+        return {}
 
 
 def _names(s) -> dict:

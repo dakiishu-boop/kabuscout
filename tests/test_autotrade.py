@@ -586,6 +586,9 @@ def test_live_ignores_incomplete_latest_day(cfg, synth):
     # 同じ（揃っていない）データでもう一度: 新しい営業日は無い。前回の注文はそのまま残り、通知もしない
     r2 = live.daily(cfg, s, notify=False, today=c.index[850])
     assert not r2["new_day"] and r2["orders"] == r1["orders"] and r2["positions"] == []
+    # 揃わないまま日が経ったら、新しい営業日が無くても知らせる
+    r2b = live.daily(cfg, s, notify=False, today=c.index[855])
+    assert r2b["stale"] and not r2b["new_day"] and "新しい営業日を処理できていません" in r2b["text"]
     # 850日目が揃った: その日の寄付で約定する
     _save_synth(cfg, synth, 851)
     r3 = live.daily(cfg, s, notify=False, today=c.index[850])

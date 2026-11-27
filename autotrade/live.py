@@ -103,14 +103,14 @@ def usable_end(cfg: dict) -> tuple[pd.Timestamp, str]:
     kabuscout の毎日の実行と同じ判定（kabuscout.pipeline._usable_date: 全銘柄の8割以上の株価が揃っている最新日）。
     GitHub の定時実行が深夜にずれると、Yahoo の最新日の足が数銘柄分しか無いことがある（2026-11-25 は 2/3694、11-27 は 3/3694）。"""
     from kabuscout.data import PriceStore
-    from kabuscout.pipeline import _usable_date
+    from kabuscout.pipeline import _cutoff, _usable_date
     store = PriceStore(cfg["data"]["price_dir"])
     proxy = cfg["universe"]["market_proxy"]
     p_last = store.load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
     # 最新日は「どれかの銘柄に株価がある最後の日」（2026-11-27 は指数のETFに無く、3銘柄だけにあった）
     c = store.load(start=(p_last - pd.Timedelta(days=40)).strftime("%Y-%m-%d"), fields=["close"])["close"]
     cnt = c.notna().sum(axis=1)
-    cnt = cnt[cnt > 0]
+    cnt = cnt[(cnt > 0) & (cnt.index <= _cutoff())]  # JST 15:40 前は当日の途中経過の足を使わない（kabuscout と同じ）
     last = cnt.index[-1]
     end = _usable_date(store, last)
     note = ""
@@ -147,11 +147,18 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
     sd = state_dir(cfg)
     (sd / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
     (sd / "report.md").write_text(rep["text"])
+    # 新しい営業日が来ないまま日が経った（データが揃わない日が続いている）ときは、毎回知らせる（黙って止まらないように）
+    age = _busdays_between(end, today or pd.Timestamp(datetime.now(JST).date()))
+    stale = age > s.get("risk", {}).get("data_max_age_days", 3)
+    if stale:
+        head, _, rest = rep["text"].partition("\n")
+        rep["text"] = f"{head}\n⚠️ 使える最新の株価が {end.date()}（{age}営業日前）のまま。新しい営業日を処理できていません\n{rest}"
+    rep["stale"] = stale
     print(rep["text"])
-    if notify and rep.get("new_day"):
+    if notify and (rep.get("new_day") or stale):
         send(cfg, rep)
     elif notify:
-        log.info("新しく処理した営業日が無いので、通知は送りません")
+        log.info("新しく処理した営業日が無いので、通知は送りません（同じ日の2回目以降の実行）")
     return rep
 
 
@@ -358,6 +365,7 @@ def send(cfg: dict, rep: dict) -> None:
         text = rep["text"][:3900]
         if n.get("discord_webhook"):
             notify.discord(n["discord_webhook"], {"content": text[:1990]})
+            log.info("Discord に送りました")
         if n.get("ntfy_topic"):
             notify.ntfy(n.get("ntfy_server", "https://ntfy.sh"), n["ntfy_topic"], "自動売買（ペーパー）", text)
     except Exception as e:

@@ -1,1 +1,1 @@
-python -m autotrade.lab blendcheck
+python -m autotrade.lab opencheck --dates 40

@@ -57,6 +57,9 @@ def main(argv: list[str]) -> None:
     cmd = argv[0] if argv else "probe"
     if cmd == "probe":
         probe()
+    elif cmd == "opencheck":
+        from . import opencheck
+        opencheck.main(argv[1:])
     elif cmd == "blendcheck":
         from . import blendcheck
         blendcheck.main(argv[1:])

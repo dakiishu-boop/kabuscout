@@ -1,1 +1,1 @@
-python -m autotrade.lab bench
+python -m autotrade.lab live

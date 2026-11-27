@@ -27,7 +27,7 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 ITEMS = ["kabuscout.db", "scored", "scored_wide", "flows", "tdnet_xbrl", "jquants", "strategy_params.json", "alerts.json", "core.json",
-         "forward.json", "backtest.json", "research.json"]
+         "forward.json", "backtest.json", "research.json", "autotrade"]  # autotrade = 自動売買のペーパートレード口座（autotrade/live.py）
 BOT = ["-c", "user.name=kabuscout-bot", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com"]
 
 

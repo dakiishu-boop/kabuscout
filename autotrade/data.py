@@ -24,10 +24,10 @@ class Universe:
     min_history: int = 250            # 上場からの営業日数の下限
 
 
-def load_panel(cfg: dict, start: str = "2002-01-01"):
+def load_panel(cfg: dict, start: str = "2002-01-01", end: str | None = None):
     from kabuscout.data import PriceStore
     store = PriceStore(cfg["data"]["price_dir"])
-    panel = store.load(start=start)
+    panel = store.load(start=start, end=end)
     proxy = cfg["universe"]["market_proxy"]
     mkt = panel["close"][proxy].ffill()
     cal = mkt.dropna().index
@@ -35,7 +35,7 @@ def load_panel(cfg: dict, start: str = "2002-01-01"):
     px = {k: v.reindex(index=cal, columns=codes).astype("float32") for k, v in panel.items()}
     fac = store.split_factor(cal, codes).astype("float32")
     splits = store._raw("splits").reindex(index=cal, columns=codes) if store.has_splits() else None
-    div = store.load_dividends(start=start)
+    div = store.load_dividends(start=start, end=end)
     div = div.reindex(index=cal, columns=codes) if div is not None and not div.empty else None
     return px, mkt.reindex(cal), fac, splits, div
 
@@ -50,9 +50,9 @@ def sectors(cfg: dict) -> pd.Series:
 
 
 def build(cfg: dict, horizons=(5, 10, 20), uni: Universe = Universe(), start: str = "2002-01-01",
-          with_events: bool = True):
-    """返す: (ds 縦長の学習表, market バックテスト用, masks)。"""
-    px, mkt, fac, splits, div = load_panel(cfg, start)
+          with_events: bool = True, end: str | None = None):
+    """返す: (ds 縦長の学習表, market バックテスト用, masks)。end: この日までのデータだけを使う（毎日の運用で、株価が揃っていない最新日を除く）"""
+    px, mkt, fac, splits, div = load_panel(cfg, start, end)
     return build_core(cfg, px, mkt, fac, splits, div, horizons, uni, with_events)
 
 

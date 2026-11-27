@@ -31,6 +31,10 @@ from .strategy import Params, decide
 log = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
 CONFIG = Path(__file__).with_name("config.yaml")
+# 口座の状態ファイルの版。2（2026-11-28）: 株価が揃っていない最新日を使わない。
+# 1 の口座は、深夜の実行で株価が3/3694銘柄しか届いていない日のデータで判断していた（候補が1銘柄だけになった）ので、
+# 一度だけ作り直す（元のファイルは state_*.v1.json として残す）
+STATE_VERSION = 2
 
 
 def load_settings(path: Path = CONFIG) -> dict:
@@ -48,11 +52,11 @@ def params_of(s: dict) -> Params:
 
 
 # ---------------------------------------------------------------- model
-def train(cfg: dict, s: dict) -> dict:
-    """全期間のデータで最終のモデルを作って保存する。"""
+def train(cfg: dict, s: dict, end: pd.Timestamp | None = None) -> dict:
+    """全期間のデータで最終のモデルを作って保存する。end: この日までのデータだけを使う（株価が揃っていない最新日を除く）"""
     import joblib
     hs = s["model"]["horizons"]
-    ds, _, _ = D.build(cfg, horizons=hs)
+    ds, _, _ = D.build(cfg, horizons=hs, end=end.strftime("%Y-%m-%d") if end is not None else None)
     feats = F.FEATURES
     bundle = dict(features=feats, horizons=hs, models={}, trained=datetime.now(JST).isoformat(timespec="seconds"),
                   data_through=str(ds["date"].max().date()))
@@ -68,7 +72,7 @@ def train(cfg: dict, s: dict) -> dict:
     return bundle
 
 
-def load_model(cfg: dict, s: dict, max_age_days: int = 8):
+def load_model(cfg: dict, s: dict, max_age_days: int = 8, end: pd.Timestamp | None = None):
     import joblib
     p = state_dir(cfg) / "model.joblib"
     if p.exists():
@@ -77,7 +81,7 @@ def load_model(cfg: dict, s: dict, max_age_days: int = 8):
         if age.days < max_age_days and b["horizons"] == s["model"]["horizons"]:
             return b
         log.info("モデルが古い（%d日前）ので学び直します", age.days)
-    return train(cfg, s)
+    return train(cfg, s, end)
 
 
 def score(bundle: dict, rows: pd.DataFrame) -> pd.Series:
@@ -94,16 +98,35 @@ def _busdays_between(a: pd.Timestamp, b: pd.Timestamp) -> int:
     return int(np.busday_count(a.date(), b.date()))
 
 
+def usable_end(cfg: dict) -> tuple[pd.Timestamp, str]:
+    """使ってよいデータの最終日と、最新日を除いたときの注意書き。
+    kabuscout の毎日の実行と同じ判定（kabuscout.pipeline._usable_date: 全銘柄の8割以上の株価が揃っている最新日）。
+    GitHub の定時実行が深夜にずれると、Yahoo の最新日の足が数銘柄分しか無いことがある（2026-11-25 は 2/3694、11-27 は 3/3694）。"""
+    from kabuscout.data import PriceStore
+    from kabuscout.pipeline import _usable_date
+    store = PriceStore(cfg["data"]["price_dir"])
+    proxy = cfg["universe"]["market_proxy"]
+    last = store.load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
+    end = _usable_date(store, last)
+    note = ""
+    if end < last:
+        note = (f"⚠️ {last.date()} の株価がまだ揃っていない（Yahoo）ため、{end.date()} までのデータで判断しました。"
+                f"{last.date()} の分は、揃ってから次の実行で処理します")
+    return end, note
+
+
 def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = None) -> dict:
     """本番の口座（state.json）と、比較用の口座（config の shadow_accounts。state_<名前>.json）を同じデータで1日進める。
-    比較用の口座は売買の形だけが違い、AIの点数は共通。通知は本番の口座のレポートに比較用の口座の1行を足して送る。"""
-    from kabuscout.data import PriceStore
-    proxy = cfg["universe"]["market_proxy"]
-    end = PriceStore(cfg["data"]["price_dir"]).load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
+    比較用の口座は売買の形だけが違い、AIの点数は共通。通知は本番の口座のレポートに比較用の口座の1行を足して送る。
+    株価が揃っていない最新日は使わない（usable_end）。新しく処理した営業日が無い実行（同じ日の2回目など）は通知しない。"""
+    end, note = usable_end(cfg)
     start = (end - pd.Timedelta(days=900)).strftime("%Y-%m-%d")  # 特徴量に1年強の履歴が要る（データの最終日から数える）
-    ds, market, masks = D.build(cfg, horizons=(), start=start)
-    cache: dict = {}
+    ds, market, masks = D.build(cfg, horizons=(), start=start, end=end.strftime("%Y-%m-%d"))
+    cache: dict = {"end": end}
     rep = _account(cfg, s, params_of(s), "state.json", "report", ds, market, cache, today)
+    if note:
+        head, _, rest = rep["text"].partition("\n")
+        rep["text"] = f"{head}\n{note}\n{rest}"
     for name, diff in (s.get("shadow_accounts") or {}).items():
         try:
             diff = dict(diff)
@@ -120,8 +143,10 @@ def daily(cfg: dict, s: dict, notify: bool = True, today: pd.Timestamp | None = 
     (sd / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
     (sd / "report.md").write_text(rep["text"])
     print(rep["text"])
-    if notify:
+    if notify and rep.get("new_day"):
         send(cfg, rep)
+    elif notify:
+        log.info("新しく処理した営業日が無いので、通知は送りません")
     return rep
 
 
@@ -131,12 +156,18 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
     st_path = sd / state_name
     cal = market.cal
     cix = {c: j for j, c in enumerate(market.codes)}
-    if st_path.exists():
-        st = json.loads(st_path.read_text())
+    st = json.loads(st_path.read_text()) if st_path.exists() else None
+    if st is not None and st.get("version", 1) < STATE_VERSION:
+        old = st_path.with_name(st_path.stem + ".v1.json")
+        st_path.replace(old)
+        log.warning("口座 %s は前の版（株価が揃っていない日も使っていた）で作られたので作り直します（元のファイルは %s）",
+                    state_name, old.name)
+        st = None
+    if st is not None:
         b = PaperBroker.from_dict(st["broker"])
         guard = RiskGuard(RiskLimits(**s.get("risk", {})), **st.get("guard", {}))
     else:
-        st = dict(last_date=None, since_reb=10 ** 6, equity=[], peak=s["account"]["capital"], log=[])
+        st = dict(version=STATE_VERSION, last_date=None, since_reb=10 ** 6, equity=[], peak=s["account"]["capital"], log=[])
         b = PaperBroker(s["account"]["capital"], p.cost, p.lot)
         guard = RiskGuard(RiskLimits(**s.get("risk", {})))
         log.info("自動売買の口座 %s を新しく作りました（資金 %s円）", state_name, f"{s['account']['capital']:,}")
@@ -209,7 +240,7 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
         rows = ds[ds["date"] == cal[i]]
         if reb and len(rows):
             if "scores" not in cache:  # AIの点数はすべての口座で共通（1日に1回だけ計算）
-                bundle = load_model(cfg, s)
+                bundle = load_model(cfg, s, end=cache.get("end"))
                 cache["scores"] = dict(zip(rows["code"], score(bundle, rows)))
             scores = cache["scores"]
             elig = set(rows.loc[rows["elig"], "code"])
@@ -230,6 +261,8 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
         b.submit(orders)
         if reb and age <= guard.limits.data_max_age_days:
             st["since_reb"] = 0  # 古いデータで止めた日は入れ替えたことにしない（次の実行でもう一度判断する）
+    else:
+        orders = list(b.open_orders())  # 新しい営業日が無い: 前回に出した翌朝の注文がそのまま残っている
     st["broker"], st["guard"] = b.to_dict(), guard.to_dict()
     if sleeve is not None:
         st["sleeve"], st["sleeve_value"] = sleeve.to_dict(), idx_val(len(cal) - 1)
@@ -239,6 +272,7 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
     tmp.replace(st_path)
     rep = report(st, b, crow, orders, blocked, events, cal[i], s,
                  index=(p.index_name if p.index_share > 0 else "", idx_val(len(cal) - 1), index_note) if sleeve is not None else None)
+    rep["new_day"] = bool(todo)
     (sd / f"{report_name}.md").write_text(rep["text"])
     return rep
 

@@ -22,7 +22,7 @@ def main(argv: list[str]) -> None:
     if cmd == "daily":
         live.daily(cfg, s, notify="--no-notify" not in argv)
     elif cmd == "train":
-        live.train(cfg, s)
+        live.train(cfg, s, live.usable_end(cfg)[0])  # 株価が揃っていない最新日は使わない
     elif cmd == "status":
         p = live.state_dir(cfg) / "report.md"
         print(p.read_text() if p.exists() else "まだ実行されていません")

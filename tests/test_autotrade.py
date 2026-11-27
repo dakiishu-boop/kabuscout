@@ -543,3 +543,74 @@ def test_live_receives_dividends_and_taxes_ai_gains_like_sim(cfg, synth):
     sl = st["sleeve"]
     assert sl["year"] == c.index[k].year and sl["tax"] == pytest.approx(0.20315)
     assert sl["taxes_paid"] > 0 or sl["carry"]
+
+
+def _save_synth(cfg, synth, n, partial_last: int | None = None):
+    """合成の株価を n 日分保存する。partial_last=k なら、最終日は先頭の k 銘柄（と指数）しか株価が無い（Yahoo の更新途中の再現）。"""
+    from kabuscout.data import PriceStore
+    o, h, l, c, v, mkt = synth
+    P = {k: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if k != "volume" else 0.0)})
+         for k, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
+    if partial_last is not None:
+        for k in P:
+            P[k].iloc[-1, partial_last:len(c.columns)] = np.nan
+    P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
+    P["dividends"] = pd.DataFrame()
+    PriceStore(cfg["data"]["price_dir"]).save(P)
+
+
+def _small_settings():
+    from autotrade import live
+    s = live.load_settings()
+    s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
+    s["strategy"].update(n_hold=4, keep_rank=8, regime_ma=0)
+    s["risk"]["max_order_value"] = 1e9
+    s["shadow_accounts"] = {}
+    return s
+
+
+def test_live_ignores_incomplete_latest_day(cfg, synth):
+    """2026-11-27 の本番の初回: 最新日の株価が3/3694銘柄しか無いのに、その日で判断して候補が1銘柄になった。
+    株価が揃っていない最新日は使わず、前の日で判断する。揃ったら次の実行でその日を処理する。"""
+    from autotrade import live
+    c = synth[3]
+    s = _small_settings()
+    _save_synth(cfg, synth, 851, partial_last=2)  # 850日目（最終日）は2銘柄しか無い
+    r1 = live.daily(cfg, s, notify=False, today=c.index[850])
+    assert r1["date"] == str(c.index[849].date())  # 揃っている 849日目で判断
+    assert "揃っていない" in r1["text"] and r1["new_day"]
+    assert len(r1["orders"]) == 4  # 候補が全銘柄から選ばれる（揃っていない日だと2銘柄しか候補が無い）
+    st = json.loads((live.state_dir(cfg) / "state.json").read_text())
+    assert st["last_date"] == str(c.index[849].date()) and st["version"] == live.STATE_VERSION
+    # 同じ（揃っていない）データでもう一度: 新しい営業日は無い。前回の注文はそのまま残り、通知もしない
+    r2 = live.daily(cfg, s, notify=False, today=c.index[850])
+    assert not r2["new_day"] and r2["orders"] == r1["orders"] and r2["positions"] == []
+    # 850日目が揃った: その日の寄付で約定する
+    _save_synth(cfg, synth, 851)
+    r3 = live.daily(cfg, s, notify=False, today=c.index[850])
+    assert r3["new_day"] and r3["date"] == str(c.index[850].date()) and "揃っていない" not in r3["text"]
+    assert {x["code"] for x in r3["positions"]} == {x["code"] for x in r1["orders"]}
+
+
+def test_live_recreates_accounts_from_the_old_version_once(cfg, synth):
+    """前の版（version が無い）の口座は一度だけ作り直し、元のファイルは .v1.json として残す。新しい版の口座はそのまま続く。"""
+    from autotrade import live
+    c = synth[3]
+    s = _small_settings()
+    _save_synth(cfg, synth, 850)
+    live.daily(cfg, s, notify=False, today=c.index[849])
+    path = live.state_dir(cfg) / "state.json"
+    st = json.loads(path.read_text())
+    st.pop("version")
+    st["last_date"] = str(c.index[845].date())  # 前の版の印として、古い日付の状態にしておく
+    path.write_text(json.dumps(st))
+    _save_synth(cfg, synth, 851)
+    r = live.daily(cfg, s, notify=False, today=c.index[850])
+    assert (live.state_dir(cfg) / "state.v1.json").exists()
+    st2 = json.loads(path.read_text())
+    assert st2["version"] == live.STATE_VERSION and len(st2["equity"]) == 1  # 作り直した口座は最新日の1日分だけ
+    assert r["positions"] == [] and len(r["orders"]) >= 1
+    _save_synth(cfg, synth, 852)
+    live.daily(cfg, s, notify=False, today=c.index[851])
+    st3 = json.loads(path.read_text())
+    assert len(st3["equity"]) == 2 and len(st3["broker"]["positions"]) > 0  # 作り直した口座の注文が約定して続く

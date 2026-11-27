@@ -145,8 +145,12 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
     events = []
     # 指数の部分（AIと指数を組み合わせた口座だけ。autotrade/blend.py。過去の検証と同じ Sleeve を使う。毎日の運用では税はかけない）
     sleeve, lvl, index_note = None, None, ""
-    if p.index_share > 0:
-        sleeve = Sleeve.from_dict(st["sleeve"]) if st.get("sleeve") else Sleeve(p.index_share)
+    if p.index_share > 0 or p.tax_ai > 0:  # 過去の検証（sim.run）と同じ条件で Sleeve を作る（税だけのときも）
+        sleeve = Sleeve.from_dict(st["sleeve"]) if st.get("sleeve") else Sleeve(p.index_share, p.tax_ai)
+        sleeve.share, sleeve.tax = p.index_share, p.tax_ai
+    if p.index_share <= 0 and sleeve is not None:
+        lvl = np.ones(len(cal))  # 指数を持たない口座は値段1（口数0）として税の計算だけに使う
+    elif p.index_share > 0:
         lvl, src = _index_levels(cfg, cal, p.index_name, cache)
         if lvl is None:
             index_note = f"⚠️ 指数（{p.index_name}）のデータを取れませんでした。指数の部分は前回の値のまま"
@@ -178,6 +182,10 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
         for f in b.execute_open(d, _Row(market.open[i], cix)):
             events.append(f"{d} 約定 {f.side} {f.code} {f.shares}株 @{f.raw_px:,.1f}" +
                           (f" 損益 {f.pnl:+,.0f}円（{f.net:+.1%}）{f.reason}" if f.side == "sell" else f" {f.reason}"))
+        if market.div is not None and b.positions():  # 権利落ち日の配当（税引き後。過去の検証の dividends=True と同じ）
+            got = b.add_dividends({c: float(market.div[i, cix[c]]) for c in b.positions() if c in cix})
+            if got > 0:
+                events.append(f"{d} 配当 {got:,.0f}円（税引き後）")
         lc = st.setdefault("last_close", {})
         for c in list(b.positions()):
             v = market.close[i, cix[c]] if c in cix else float("nan")
@@ -230,7 +238,7 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1))
     tmp.replace(st_path)
     rep = report(st, b, crow, orders, blocked, events, cal[i], s,
-                 index=(p.index_name, idx_val(len(cal) - 1), index_note) if sleeve is not None else None)
+                 index=(p.index_name if p.index_share > 0 else "", idx_val(len(cal) - 1), index_note) if sleeve is not None else None)
     (sd / f"{report_name}.md").write_text(rep["text"])
     return rep
 
@@ -241,7 +249,7 @@ def report(st, b: PaperBroker, crow, orders, blocked, events, date, s, index=Non
     names = _names(s)
     lines = [f"# 自動売買（ペーパートレード） {date.date()} 引け後",
              f"資産 {eq:,.0f}円（{eq / cap - 1:+.1%}）・現金 {b.cash():,.0f}円・最高値から {eq / st['peak'] - 1:+.1%}"]
-    if index:
+    if index and index[0]:
         lines.append(f"うち指数（{index[0]}）{index[1]:,.0f}円・AIの部分 {eq - index[1]:,.0f}円")
         if index[2]:
             lines.append(index[2])

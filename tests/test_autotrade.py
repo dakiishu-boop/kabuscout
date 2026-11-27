@@ -509,3 +509,37 @@ def test_live_blend_account_rebalances_once_and_flags_stale_index(cfg, synth, mo
     save(k + 2)
     r4 = live.daily(cfg, s, notify=False, today=c.index[k + 1])
     assert "データが古い" in r4["text"]
+
+
+def test_live_receives_dividends_and_taxes_ai_gains_like_sim(cfg, synth):
+    """毎日の運用も過去の検証と同じく、配当を受け取り（税引き後）、年の初めに AI の部分の前年の利益に税をかける。"""
+    from kabuscout.data import PriceStore
+    from autotrade import live
+    o, h, l, c, v, mkt = synth
+    k = next(j for j in range(700, 890) if c.index[j].year != c.index[j - 1].year)
+    div = pd.DataFrame(np.nan, index=c.index, columns=list(c.columns) + ["^N225"])
+    div.iloc[k - 2, :-1] = 10.0  # 前の年の終わりに全銘柄が1株10円の配当
+    def save(n):
+        P = {kk: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if kk != "volume" else 0.0)})
+             for kk, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
+        P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
+        P["dividends"] = div.iloc[:n]
+        PriceStore(cfg["data"]["price_dir"]).save(P)
+    s = live.load_settings()
+    s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
+    s["strategy"].update(n_hold=4, keep_rank=40, regime_ma=0, tax_ai=0.20315)
+    s["risk"]["max_order_value"] = 1e9
+    s["shadow_accounts"] = {}
+    save(k - 4)
+    live.daily(cfg, s, notify=False, today=c.index[k - 5])
+    save(k - 3)
+    live.daily(cfg, s, notify=False, today=c.index[k - 4])   # 買いが約定
+    save(k - 1)
+    r = live.daily(cfg, s, notify=False, today=c.index[k - 2])  # 配当の日を含む
+    assert "配当" in r["text"]
+    save(k + 1)
+    live.daily(cfg, s, notify=False, today=c.index[k])          # 新しい年の最初の日: 前年の税（または損失の繰り越し）
+    st = json.loads((live.state_dir(cfg) / "state.json").read_text())
+    sl = st["sleeve"]
+    assert sl["year"] == c.index[k].year and sl["tax"] == pytest.approx(0.20315)
+    assert sl["taxes_paid"] > 0 or sl["carry"]

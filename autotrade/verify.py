@@ -198,7 +198,7 @@ def main(argv: list[str]) -> None:
     cfg = load_config(Path(a.config))
     mp = json.loads(a.model_params) if a.model_params else None
     s = live.load_settings()
-    p = Params(**s["strategy"])
+    p = Params(**{**s["strategy"], "tax_ai": 0.0})  # 研究は税引き前（これまでの記録と揃える）
     H = s["model"]["horizons"][0]
     feats = F.FEATURES
     t0 = time.time()

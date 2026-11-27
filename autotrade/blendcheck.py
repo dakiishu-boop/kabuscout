@@ -44,8 +44,8 @@ def main(argv: list[str]) -> None:
     cfg = load_config(Path(argv[argv.index("--config") + 1]) if "--config" in argv else Path("config.yaml"))
     mp = json.loads(argv[argv.index("--model-params") + 1]) if "--model-params" in argv else None
     s = live.load_settings()
-    p_main = Params(**s["strategy"])
-    p_frozen = Params(**{**s["strategy"], **{k: v for k, v in s["shadow_accounts"]["frozen"].items() if k != "risk"}})
+    p_main = Params(**{**s["strategy"], "tax_ai": 0.0})  # 税は run() の中で行ごとに付ける
+    p_frozen = Params(**{**s["strategy"], "tax_ai": 0.0, **{k: v for k, v in s["shadow_accounts"]["frozen"].items() if k != "risk"}})
     H = s["model"]["horizons"][0]
     t0 = time.time()
     ds, market, masks = D.build(cfg, horizons=(H,))

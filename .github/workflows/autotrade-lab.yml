@@ -34,6 +34,6 @@ jobs:
       - name: Lab
         env:
           PYTHONWARNINGS: ignore
-          # 公式の始値との比較（autotrade/opencheck.py）に使う。ユーザーの了承済み（2026-11-27）。値はログに出さない
-          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          # J-Quants のキーは、公式の始値との比較（autotrade/opencheck.py、2026-11-27 に1回）のときだけ使った。
+          # 普段は渡さない。もう一度比べるときは、ここに JQUANTS_API_KEY（リポジトリの Secrets）を足す
         run: bash -e autotrade/LAB_CMD  # 実行する研究の内容（1行に1つのコマンド）

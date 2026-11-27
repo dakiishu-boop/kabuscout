@@ -226,7 +226,7 @@ def main(argv: list[str]) -> None:
     cfg = load_config(Path(a.config))
     mp = json.loads(a.model_params) if a.model_params else {}
     s = live.load_settings()
-    p0 = Params(**s["strategy"])
+    p0 = Params(**{**s["strategy"], "tax_ai": 0.0})  # 研究は税引き前（これまでの記録と揃える）
     t0 = time.time()
     hs = (2, 3, 5) if "B" in only else (5,)
     ds, market, masks = D.build(cfg, horizons=hs)

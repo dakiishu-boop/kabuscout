@@ -545,15 +545,16 @@ def test_live_receives_dividends_and_taxes_ai_gains_like_sim(cfg, synth):
     assert sl["taxes_paid"] > 0 or sl["carry"]
 
 
-def _save_synth(cfg, synth, n, partial_last: int | None = None):
-    """合成の株価を n 日分保存する。partial_last=k なら、最終日は先頭の k 銘柄（と指数）しか株価が無い（Yahoo の更新途中の再現）。"""
+def _save_synth(cfg, synth, n, partial_last: int | None = None, proxy_missing: bool = False):
+    """合成の株価を n 日分保存する。partial_last=k なら、最終日は先頭の k 銘柄（と指数）しか株価が無い（Yahoo の更新途中の再現）。
+    proxy_missing: 最終日に指数（^N225）の株価も無い（2026-11-27 の本番と同じ形）"""
     from kabuscout.data import PriceStore
     o, h, l, c, v, mkt = synth
     P = {k: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if k != "volume" else 0.0)})
          for k, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
     if partial_last is not None:
         for k in P:
-            P[k].iloc[-1, partial_last:len(c.columns)] = np.nan
+            P[k].iloc[-1, partial_last:len(c.columns) + (1 if proxy_missing else 0)] = np.nan
     P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
     P["dividends"] = pd.DataFrame()
     PriceStore(cfg["data"]["price_dir"]).save(P)
@@ -590,6 +591,16 @@ def test_live_ignores_incomplete_latest_day(cfg, synth):
     r3 = live.daily(cfg, s, notify=False, today=c.index[850])
     assert r3["new_day"] and r3["date"] == str(c.index[850].date()) and "揃っていない" not in r3["text"]
     assert {x["code"] for x in r3["positions"]} == {x["code"] for x in r1["orders"]}
+
+
+def test_live_ignores_incomplete_latest_day_even_without_the_index(cfg, synth):
+    """2026-11-27 の本番と同じ形: 最新日は指数（ETF）にも株価が無く、数銘柄だけにある。その日は使わず、注意書きを出す。"""
+    from autotrade import live
+    c = synth[3]
+    _save_synth(cfg, synth, 851, partial_last=3, proxy_missing=True)
+    r = live.daily(cfg, _small_settings(), notify=False, today=c.index[850])
+    assert r["date"] == str(c.index[849].date()) and len(r["orders"]) == 4
+    assert f"{c.index[850].date()} の株価がまだ揃っていない（3/41銘柄" in r["text"]
 
 
 def test_live_recreates_accounts_from_the_old_version_once(cfg, synth):

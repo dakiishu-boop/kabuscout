@@ -106,12 +106,17 @@ def usable_end(cfg: dict) -> tuple[pd.Timestamp, str]:
     from kabuscout.pipeline import _usable_date
     store = PriceStore(cfg["data"]["price_dir"])
     proxy = cfg["universe"]["market_proxy"]
-    last = store.load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
+    p_last = store.load(fields=["close"], codes=[proxy])["close"][proxy].dropna().index[-1]
+    # 最新日は「どれかの銘柄に株価がある最後の日」（2026-11-27 は指数のETFに無く、3銘柄だけにあった）
+    c = store.load(start=(p_last - pd.Timedelta(days=40)).strftime("%Y-%m-%d"), fields=["close"])["close"]
+    cnt = c.notna().sum(axis=1)
+    cnt = cnt[cnt > 0]
+    last = cnt.index[-1]
     end = _usable_date(store, last)
     note = ""
     if end < last:
-        note = (f"⚠️ {last.date()} の株価がまだ揃っていない（Yahoo）ため、{end.date()} までのデータで判断しました。"
-                f"{last.date()} の分は、揃ってから次の実行で処理します")
+        note = (f"⚠️ {last.date()} の株価がまだ揃っていない（{int(cnt.iloc[-1])}/{int(cnt.max())}銘柄・Yahoo）ため、"
+                f"{end.date()} までのデータで判断しました。{last.date()} の分は、揃ってから次の実行で処理します")
     return end, note
 
 

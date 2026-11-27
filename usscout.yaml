@@ -61,6 +61,21 @@ strategies:
     market: SPY
     market_sma_months: 10     # 地合い: SPY が10か月平均より下なら全部 BIL へ
     cash: BIL
+  # ---- S&P500 を超えるアイデアの候補（ジャーナル §91・§92）。**どちらも事前に決めた基準で不合格**（研究の後の期間・米国以外で S&P500 に負けた）。
+  # 既定にはしない。前向きのペーパー口座で見守るときだけ `--strategy` で選ぶ。2倍の ETF は NISA の対象外（特定口座）。
+  # 2倍の ETF の過去の最大下落は −50% 前後なので、trading.stop_dd（35%）で新規の買いが止まり、過去の検証と違う動きになることがある
+  lev_trend_spy:              # §91: SPY が10か月平均より上なら2倍の S&P500（SSO）、下なら米ドルMMF
+    signal: SPY
+    asset: SSO
+    cash: CASH
+    sma_months: 10
+  vol_managed_spy:            # §92: 指数への投資比率 = 長期の分散 ÷ 直近21営業日の分散（0〜2倍）。SSO を 比率/2、残りを米ドルMMF
+    signal: SPY
+    asset: SSO
+    cash: CASH
+    leverage: 2.0
+    cap: 2.0
+    window_days: 21
   blend:                      # etf_rotation と stock_mom に半分ずつ
     parts: {etf_rotation: 0.5, stock_mom: 0.5}
 

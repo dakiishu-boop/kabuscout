@@ -90,4 +90,7 @@ def etf_symbols(cfg: dict) -> list[str]:
     st = cfg["strategies"]
     out = list(st["gem"]["risk"]) + [st["gem"]["safe"], st["gem"]["cash"]] + list(st["etf_rotation"]["universe"])
     out += [st["trend_qqq"]["asset"], st["stock_mom"]["market"]]
+    for v in st.values():  # 各戦略の asset / signal（2倍の ETF など）
+        if isinstance(v, dict):
+            out += [v[k] for k in ("asset", "signal") if isinstance(v.get(k), str) and v[k] != "CASH"]
     return list(dict.fromkeys(out + EXTRA))

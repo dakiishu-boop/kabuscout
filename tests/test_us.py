@@ -13,7 +13,7 @@ from usscout import broker as B
 from usscout import data as D
 from usscout.config import load as load_cfg
 
-SYMS = ["SPY", "QQQ", "BIL", "AGG", "EFA", "IWM", "EEM", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLU", "XLB",
+SYMS = ["SPY", "SSO", "QQQ", "BIL", "AGG", "EFA", "IWM", "EEM", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLU", "XLB",
         "TLT", "IEF", "GLD", "VNQ", "AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
 
 
@@ -42,7 +42,7 @@ def members_all(p, syms=("AAA", "BBB", "CCC", "DDD", "EEE", "FFF")):
     return pd.DataFrame(True, index=me, columns=list(syms))
 
 
-@pytest.mark.parametrize("name", ["gem", "etf_rotation", "trend_spy", "stock_mom", "blend"])
+@pytest.mark.parametrize("name", ["gem", "etf_rotation", "trend_spy", "stock_mom", "blend", "lev_trend_spy", "vol_managed_spy"])
 def test_target_ignores_future(cfg, name):
     """判定日より後の値段を書き換えても、判定日の目標は変わらない（先読みしていない）。"""
     p = D.with_cash(make_panel())
@@ -313,3 +313,25 @@ def test_combo_extremes(cfg):
     assert b.iloc[-1] == pytest.approx(us.iloc[-1] / us.iloc[0] * jp.iloc[0], rel=1e-9)
     al = combo.allocation(700000, 2000, 150.0, 0.5)
     assert al["move_jpy"] == 200000 and al["direction"] == "日本株 → 米国株"
+
+
+def test_vol_managed_weights(cfg):
+    """落ち着いた相場ほど2倍の ETF を多く、荒れた直後は少なく。合計は1、上限は2倍（= 2倍の ETF 100%）。"""
+    p = D.with_cash(make_panel())
+    s = D.month_ends(p.dates)[40]
+    st = strategies.build("vol_managed_spy", cfg)
+    w = st(p.upto(s))
+    assert sum(w.values()) == pytest.approx(1.0) and 0 <= w["SSO"] <= 1.0
+    q = D.Panel(*(getattr(p, f).copy() for f in D.FIELDS))
+    idx = q.close.index[(q.close.index <= s)][-15:]
+    q.close.loc[idx, "SPY"] = q.close.loc[idx, "SPY"].values * np.array([1.06, 0.95] * 7 + [1.06])  # 直近だけ大荒れ
+    w2 = strategies.build("vol_managed_spy", cfg)(q.upto(s))
+    assert w2["SSO"] < w["SSO"]
+
+
+def test_lev_trend_uses_signal_index(cfg):
+    p = D.with_cash(make_panel())
+    s = D.month_ends(p.dates)[40]
+    w = strategies.build("lev_trend_spy", cfg)(p.upto(s))
+    w1 = strategies.build("trend_spy", cfg, {"cash": "CASH"})(p.upto(s))
+    assert (w == {"SSO": 1.0}) == (w1 == {"SPY": 1.0})

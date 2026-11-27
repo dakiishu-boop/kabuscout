@@ -117,12 +117,34 @@ class TrendHold(Strategy):
 
     def target(self, p, members=None):
         a = self.p["asset"]
-        c = p.close[[a]]
-        sma = _monthly_sma(c, self.p.get("sma_months", 10))[a]
-        last = c[a].iloc[-1]
+        g = self.p.get("signal", a)  # 判定に使う指数（既定は持つものと同じ。2倍の ETF を持つときは SPY で判定）
+        c = p.close[[g]]
+        sma = _monthly_sma(c, self.p.get("sma_months", 10))[g]
+        last = c[g].iloc[-1]
         up = pd.notna(sma) and last > sma
-        self._why = [{"symbol": a, "close": round(float(last), 2), "sma": round(float(sma), 2) if pd.notna(sma) else None, "up": bool(up)}]
+        self._why = [{"symbol": g, "close": round(float(last), 2), "sma": round(float(sma), 2) if pd.notna(sma) else None, "up": bool(up), "hold": a if up else self.p["cash"]}]
         return {a: 1.0} if up else {self.p["cash"]: 1.0}
+
+
+class VolManaged(Strategy):
+    """値動きが落ち着いているときほど多く持つ（Moreira & Muir、ジャーナル §92。**事前の基準では不合格**、前向きのペーパー口座で見守る用）。
+    指数への投資比率 = その日までの全期間の日々の騰落の分散 ÷ 直近21営業日の分散（0〜cap 倍）。2倍の ETF を 比率/2、残りを現金で持つ。"""
+    name = "vol_managed"
+
+    def target(self, p, members=None):
+        P = self.p
+        r = p.close[P["signal"]].dropna().pct_change().dropna()
+        n = int(P.get("window_days", 21))
+        if len(r) < max(n, 252):
+            return {P["cash"]: 1.0}
+        e = float(min(r.var() / r.iloc[-n:].var(), float(P.get("cap", 2.0))))
+        lev = float(P.get("leverage", 2.0))
+        w = {P["asset"]: e / lev}
+        if e / lev < 1:
+            w[P["cash"]] = 1 - e / lev
+        self._why = [{"symbol": P["signal"], "exposure": round(e, 3), "recent_vol": round(float(r.iloc[-n:].std() * np.sqrt(252)), 4),
+                      "long_vol": round(float(r.std() * np.sqrt(252)), 4)}]
+        return w
 
 
 class StockMomentum(Strategy):
@@ -197,7 +219,8 @@ class Blend(Strategy):
         return w
 
 
-REGISTRY = {"gem": GEM, "etf_rotation": ETFRotation, "trend_spy": TrendHold, "trend_qqq": TrendHold, "stock_mom": StockMomentum}
+REGISTRY = {"gem": GEM, "etf_rotation": ETFRotation, "trend_spy": TrendHold, "trend_qqq": TrendHold, "stock_mom": StockMomentum,
+            "lev_trend_spy": TrendHold, "vol_managed_spy": VolManaged}
 NEEDS_MEMBERS = {"stock_mom", "equal_weight", "blend"}
 
 

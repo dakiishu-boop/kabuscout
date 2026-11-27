@@ -193,3 +193,72 @@ def markdown(rep: dict) -> str:
     for k, ev in rep["intl"].items():
         out += table(ev, f"{INDICES[k]}（配当なし・現金0%・借りる金利は米国の短期金利＋0.5%）")
     return "\n".join(out)
+
+
+# ---- §92: ボラティリティ管理（Moreira & Muir）。指数への投資比率 0〜2倍を、2倍の商品と現金の混ぜ方で持つ ----
+def exposure_volmanaged(px: pd.Series, window: int = 21, cap: float = 2.0) -> pd.Series:
+    """月の最後の営業日に、直近 window 日の分散の逆数 × その日までの全期間の分散 → 翌月の投資比率（先読みなし）。"""
+    r = px.pct_change()
+    rv = r.rolling(window, min_periods=window).var()
+    target = r.expanding(min_periods=252).var()
+    e = (target / rv).clip(upper=cap)
+    me = px.groupby(px.index.to_period("M")).tail(1).index
+    out = pd.Series(np.nan, index=px.index)
+    out[me] = e[me]
+    return out.ffill()
+
+
+def run_mix(r: pd.Series, expo: pd.Series, fin: pd.Series, cash: pd.Series, cost: float, lag: int = 2) -> dict:
+    """指数への投資比率 expo（0〜2）→ 2倍の商品に expo/2、残りを現金。売買の量 |Δ(expo/2)| にコスト。"""
+    f = (expo.shift(lag) / 2).fillna(0.0)
+    sw = f.diff().abs().fillna(f.iloc[0])
+    R = f * synth(r, 2, fin) + (1 - f) * cash / 252 - sw.shift(-1).fillna(0) * cost
+    return {"ret": R, "exposure": f * 2, "switches": sw}
+
+
+def evaluate_vm(px: pd.Series, irx: pd.Series, start, end=None, us: bool = True, cost: float = 0.00545) -> dict:
+    px = px.dropna()
+    r = px.pct_change().fillna(0.0)
+    fin, cash = rates(px.index, irx, us)
+    res = run_mix(r, exposure_volmanaged(px), fin, cash, cost)
+    win = (r.index >= pd.Timestamp(start)) & (r.index <= pd.Timestamp(end or r.index[-1]))
+    rw, fw, cw = r[win], fin[win], cash[win]
+    R, e, sw = res["ret"][win], res["exposure"][win], res["switches"][win]
+    f = float(e.mean()) / 2
+    Rm = f * synth(rw, 2, fw) + (1 - f) * cw / 252
+    return {"start": str(rw.index[0].date()), "end": str(rw.index[-1].date()), "buy_hold": stats(rw),
+            "volmanaged": stats(R, e, sw), "volmanaged_exposure_matched": dict(stats(Rm), fraction_in_2x=f),
+            "volmanaged_after_tax": metrics.cagr(metrics.after_tax(curve(R))), "turnover_per_year": float(sw.sum() / metrics.years(curve(R)))}
+
+
+def run_vm(root: Path) -> dict:
+    c = load(root)
+    irx = c["^IRX"]
+    g = c["^GSPC"].dropna()
+    rep = {"sp500_long": evaluate_vm(g, irx, "1929-01-01"), "sp500_post_paper": evaluate_vm(g, irx, "2016-05-01"),
+           "sp500_2008": evaluate_vm(c["SPY"].dropna(), irx, "2008-01-01"),
+           "sp500_2008_jp_etf_cost": evaluate_vm(c["SPY"].dropna(), irx, "2008-01-01", cost=0.001), "intl": {}}
+    if "^SP500TR" in c and c["^SP500TR"].notna().sum() > 1000:
+        tr = c["^SP500TR"].dropna()
+        rep["sp500tr_1989"] = evaluate_vm(tr, irx, str((tr.index[0] + pd.DateOffset(years=1)).date()))
+    for k in ("^N225", "^GDAXI", "^FTSE", "^HSI"):
+        s = c[k].dropna()
+        rep["intl"][k] = evaluate_vm(s, irx, str((s.index[0] + pd.DateOffset(years=1)).date()), us=False)
+    (Path(root) / "volmanaged.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1, default=float))
+    (Path(root) / "volmanaged.md").write_text(markdown_vm(rep))
+    return rep
+
+
+def markdown_vm(rep: dict) -> str:
+    names = {"sp500_long": "S&P500（配当なし）1929〜", "sp500_post_paper": "S&P500（配当なし）研究の後 2016-05〜",
+             "sp500tr_1989": "S&P500 トータルリターン（配当込み・参考）", "sp500_2008": "SPY（配当込み）2008〜・米国 ETF のコスト",
+             "sp500_2008_jp_etf_cost": "SPY（配当込み）2008〜・東証 ETF 手数料無料（参考）"}
+    out = ["# 値動きが落ち着いているときほど多く持つ（ボラティリティ管理・Moreira & Muir の規則・投資比率0〜2倍）", "",
+           "| 期間 | 持ち続ける 年率・最大下落 | ボラティリティ管理 年率・最大下落 | 平均の投資比率 | 投資比率をそろえた持ち続け | 税引き後 | 最悪の日 |",
+           "|---|---|---|---|---|---|---|"]
+    items = [(names[k], rep[k]) for k in names if k in rep] + [(INDICES[k], v) for k, v in rep["intl"].items()]
+    for lab, ev in items:
+        b, v, m = ev["buy_hold"], ev["volmanaged"], ev["volmanaged_exposure_matched"]
+        out.append(f"| {lab}（{ev['start'][:7]}〜） | {_p(b['cagr'])}・{_p(b['max_dd'])} | {_p(v['cagr'])}・{_p(v['max_dd'])} | {v['avg_exposure']:.2f} | "
+                   f"{_p(m['cagr'])}・{_p(m['max_dd'])} | {_p(ev['volmanaged_after_tax'])} | {_p(v['worst_day'])}（{v['worst_day_date']}） |")
+    return "\n".join(out)

@@ -26,7 +26,10 @@ class Params:
     lot: int = 100
     cost: float = 0.002          # 往復の取引コスト（kabuscout の research.cost と同じ既定値）
     min_hold_days: int = 0       # 買ってからこの営業日数までは「順位低下」では売らない（売買の回数を抑える。損切・地合いは別）
-    max_adv_frac: float = 0.0    # 1注文を「20日平均売買代金 × この割合」までにする（0 なら上限なし。自分の注文で値段を動かさないため）
+    max_adv_frac: float = 0.0
+    index_share: float = 0.0     # 資金のうち指数に入れる割合（0 なら AI だけ。autotrade/blend.py）
+    index_name: str = "全世界株式（オルカン）"  # "S&P500" か "全世界株式（オルカン）"
+    tax_ai: float = 0.0          # AI の部分の年ごとの利益にかける税（過去の検証用。0.20315 = 特定口座。指数は NISA で非課税とみなす）    # 1注文を「20日平均売買代金 × この割合」までにする（0 なら上限なし。自分の注文で値段を動かさないため）
 
     def to_dict(self) -> dict:
         return asdict(self)

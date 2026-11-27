@@ -56,7 +56,8 @@ LISTED = 3600
 def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, capital: float = 1_000_000,
         start: str | None = None, end: str | None = None, dividends: bool = False,
         crash_mult: float = 0.0, seed: int = 0, realistic_fills: bool = False,
-        lot_schedule: list | None = None, withdraw_above: float | None = None) -> dict:
+        lot_schedule: list | None = None, withdraw_above: float | None = None,
+        index_level: np.ndarray | None = None) -> dict:
     """scores: T×N の点数（NaN = 点数なし）。eligible: T×N の新規に買ってよいか。
     crash_mult > 0: 生存者バイアスの検証。保有中の銘柄が1日あたり「その年の倒産率 × crash_mult ÷ 250」の確率で
     倒産したとみなし、その日の終値の5%で翌朝売る（実際のデータには倒産した銘柄が無いため）。
@@ -66,7 +67,10 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     値段が6営業日以上途切れた保有（上場廃止など）は、最後の終値で売ったものとして現金にする。
     withdraw_above: 毎年の最終営業日に、資産がこの額を超えていれば超えた分の現金を引き出す（利息0で別に持つ）。
     1注文の大きさを抑えた（複利で口座が巨大にならない）場合の成績を見るため。資産の推移は口座そのものの損益率をつないだもの
-    （引き出した現金は含めない。含めると利息0の現金で成績が薄まる）。"""
+    （引き出した現金は含めない。含めると利息0の現金で成績が薄まる）。
+    index_level: T の指数の値段（円。blend.index_levels）。p.index_share > 0 のとき、資金のその割合を指数で持つ（blend.Sleeve）。
+    p.tax_ai > 0 のとき、AI の部分の利益に毎年税をかける（最後の年の分は最後の日の資産から差し引く）。"""
+    from .blend import Sleeve
     from .broker import Order
     from dataclasses import replace as _replace
     rng = np.random.default_rng(seed)
@@ -85,8 +89,15 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     last_close: dict[str, float] = {}
     idx, prev_eq = 1.0, float(capital)
     sched = sorted((pd.Timestamp(x), int(n)) for x, n in (lot_schedule or []))
+    sleeve = Sleeve(p.index_share, p.tax_ai) if (p.index_share > 0 or p.tax_ai > 0) else None
+    if sleeve is not None and p.index_share > 0 and index_level is None:
+        raise ValueError("index_share > 0 には index_level が要る")
+    lvl = index_level if index_level is not None else np.ones(len(cal))
     for i in range(i0, i1):
         d = cal[i].strftime("%Y-%m-%d")
+        if sleeve is not None:  # 年の最初の営業日の寄付の前: 前年の税 → 指数の比率を戻す（毎日の運用と同じ関数）
+            prev = _Row(market.close[i - 1], cix) if i > i0 else None
+            sleeve.new_year(cal[i].year, b, b.equity(prev) if prev is not None else b.cash(), float(lvl[i]), d)
         lot = next((n for x, n in sched if cal[i] < x), p.lot)
         pi = p if lot == p.lot else _replace(p, lot=lot)
         b.lot = lot
@@ -129,7 +140,12 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
             elif c in last_close:  # 6営業日以上値段が無い = 上場廃止など。最後の終値で現金にする
                 b.force_sell(d, c, last_close.pop(c), "値段の途切れ（上場廃止など）")
         eq = b.mark(crow)
+        ai_eq = eq
+        if sleeve is not None:
+            eq += sleeve.value(float(lvl[i]))
         rec = eq
+        if sleeve is not None and i + 1 >= i1:  # 最後の日: まだ払っていない今年の税を差し引いて評価する
+            rec = eq - sleeve.pending_tax(ai_eq, cal[i].year)
         if withdraw_above:  # 口座そのものの損益率をつなぐ（引き出した現金は成績に入れない＝時間加重の収益率）
             idx *= eq / prev_eq if prev_eq > 0 else 1.0
             rec = idx * capital
@@ -168,7 +184,7 @@ def run(market: Market, scores: np.ndarray, eligible: np.ndarray, p: Params, cap
     tr = pd.DataFrame([dict(date=pd.Timestamp(f.date), net=f.net, pnl=f.pnl, code=f.code, reason=f.reason,
                             entry_date=pd.Timestamp(f.entry_date) if f.entry_date else pd.NaT, shares=f.shares, px=f.raw_px)
                        for f in sells], columns=["date", "net", "pnl", "code", "reason", "entry_date", "shares", "px"])
-    return dict(equity=eqs, trades=tr, exposure=pd.Series(expo, index=eqs.index), broker=b)
+    return dict(equity=eqs, trades=tr, exposure=pd.Series(expo, index=eqs.index), broker=b, sleeve=sleeve)
 
 
 def stats(res: dict, start: str | None = None) -> dict:

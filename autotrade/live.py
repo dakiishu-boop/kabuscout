@@ -22,6 +22,7 @@ import yaml
 from . import data as D
 from . import features as F
 from . import model as M
+from .blend import Sleeve, index_levels
 from .broker import PaperBroker
 from .risk import RiskGuard, RiskLimits
 from .sim import _Row
@@ -142,10 +143,32 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
     last = pd.Timestamp(st["last_date"]) if st["last_date"] else cal[-2]
     todo = [i for i, d in enumerate(cal) if d > last]
     events = []
+    # 指数の部分（AIと指数を組み合わせた口座だけ。autotrade/blend.py。過去の検証と同じ Sleeve を使う。毎日の運用では税はかけない）
+    sleeve, lvl, index_note = None, None, ""
+    if p.index_share > 0:
+        sleeve = Sleeve.from_dict(st["sleeve"]) if st.get("sleeve") else Sleeve(p.index_share)
+        lvl, src = _index_levels(cfg, cal, p.index_name, cache)
+        if lvl is None:
+            index_note = f"⚠️ 指数（{p.index_name}）のデータを取れませんでした。指数の部分は前回の値のまま"
+        else:
+            lag = (cal[-1] - pd.Timestamp(src[-1])).days if src[-1] == src[-1] else 999
+            if lag > 5:  # 米国の終値は日本の翌営業日に入る。連休を見込んでも5日を超えたら古い
+                index_note = f"⚠️ 指数（{p.index_name}）のデータが古い（{pd.Timestamp(src[-1]).date()} の値）。届けば口数から正しい値に追いつく"
+    def idx_val(i):
+        if sleeve is None:
+            return 0.0
+        if lvl is None or not lvl[i] == lvl[i]:
+            return float(st.get("sleeve_value", 0.0))
+        return sleeve.value(float(lvl[i]))
     if not todo:
         log.info("新しい営業日のデータがありません（最新 %s）", cal[-1].date())
     for i in todo:
         d = cal[i].strftime("%Y-%m-%d")
+        if sleeve is not None and lvl is not None:  # 年の最初の営業日の寄付の前: 比率を戻す（同じ年に2回はしない）
+            prev = _Row(market.close[i - 1], cix) if i > 0 else None
+            n0 = len(sleeve.events)
+            sleeve.new_year(cal[i].year, b, b.equity(prev) if prev is not None else b.cash(), float(lvl[i]), d)
+            events += sleeve.events[n0:]
         sp = market.splits[i]
         ratios = {c: float(sp[cix[c]]) for c in {*b.positions(), *(o.code for o in b.open_orders())}
                   if c in cix and sp[cix[c]] == sp[cix[c]] and sp[cix[c]] not in (0, 1)}
@@ -163,7 +186,7 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
             elif c in lc:  # 6営業日以上値段が無い（上場廃止など）: 最後の終値で現金にする（バックテストと同じ）
                 f = b.force_sell(d, c, lc.pop(c), "値段の途切れ（上場廃止など）")
                 events.append(f"{d} {c} を最後の終値 {f.raw_px:,.1f} で現金化（値段の途切れ）")
-        eq = b.mark(_Row(market.close[i], cix))
+        eq = b.mark(_Row(market.close[i], cix)) + idx_val(i)
         st["equity"].append([d, round(eq)])
         st["peak"] = max(st["peak"], eq)
         st["since_reb"] += 1
@@ -172,7 +195,7 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
     orders, blocked = [], {}
     i = len(cal) - 1
     crow = _Row(market.close[i], cix)
-    eq = b.equity(crow)
+    eq = b.equity(crow) + idx_val(i)
     if todo and todo[-1] == i:
         reb = st["since_reb"] >= p.rebalance_every
         rows = ds[ds["date"] == cal[i]]
@@ -200,21 +223,28 @@ def _account(cfg: dict, s: dict, p: Params, state_name: str, report_name: str, d
         if reb and age <= guard.limits.data_max_age_days:
             st["since_reb"] = 0  # 古いデータで止めた日は入れ替えたことにしない（次の実行でもう一度判断する）
     st["broker"], st["guard"] = b.to_dict(), guard.to_dict()
+    if sleeve is not None:
+        st["sleeve"], st["sleeve_value"] = sleeve.to_dict(), idx_val(len(cal) - 1)
     st["log"] = (st.get("log", []) + events)[-500:]
     tmp = st_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1))
     tmp.replace(st_path)
-    rep = report(st, b, crow, orders, blocked, events, cal[i], s)
+    rep = report(st, b, crow, orders, blocked, events, cal[i], s,
+                 index=(p.index_name, idx_val(len(cal) - 1), index_note) if sleeve is not None else None)
     (sd / f"{report_name}.md").write_text(rep["text"])
     return rep
 
 
-def report(st, b: PaperBroker, crow, orders, blocked, events, date, s) -> dict:
-    eq = b.equity(crow)
+def report(st, b: PaperBroker, crow, orders, blocked, events, date, s, index=None) -> dict:
+    eq = b.equity(crow) + (index[1] if index else 0.0)
     cap = s["account"]["capital"]
     names = _names(s)
     lines = [f"# 自動売買（ペーパートレード） {date.date()} 引け後",
              f"資産 {eq:,.0f}円（{eq / cap - 1:+.1%}）・現金 {b.cash():,.0f}円・最高値から {eq / st['peak'] - 1:+.1%}"]
+    if index:
+        lines.append(f"うち指数（{index[0]}）{index[1]:,.0f}円・AIの部分 {eq - index[1]:,.0f}円")
+        if index[2]:
+            lines.append(index[2])
     if st["guard"].get("halted"):
         lines.append(f"⚠️ 新規の買いを停止中: {st['guard']['halt_reason']}（data/autotrade/state.json の guard.halted を false にすると再開）")
     lines.append("\n## 保有")
@@ -238,6 +268,20 @@ def report(st, b: PaperBroker, crow, orders, blocked, events, date, s) -> dict:
                 positions=[dict(code=p.code, shares=p.shares, entry=p.entry_px) for p in b.positions().values()],
                 orders=[dict(code=o.code, side=o.side, shares=o.shares, ref=o.ref_px, reason=o.reason) for o in orders],
                 blocked=blocked, text="\n".join(lines))
+
+
+def _index_levels(cfg: dict, cal, name: str, cache: dict):
+    """指数の値段（円）と元の米国の日付。kabuscout.core.load_indices（取れなければ前回の保存分）から。1日に1回だけ読む。"""
+    if "ix" not in cache:
+        try:
+            from kabuscout import core
+            cache["ix"] = core.load_indices(cfg)
+        except Exception as e:
+            log.warning("指数のデータを読めませんでした: %s", e)
+            cache["ix"] = None
+    if cache["ix"] is None:
+        return None, None
+    return index_levels(cache["ix"], cal, name)
 
 
 def _danger(cfg: dict) -> dict[str, str]:

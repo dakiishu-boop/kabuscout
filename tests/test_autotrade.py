@@ -399,3 +399,113 @@ def test_min_hold_days_blocks_early_rank_sells():
     assert [o for o in decide(b, scores, {"A"}, px, True, False, p) if o.side == "sell"] == []
     b.mark(px); b.mark(px)  # 3日目
     assert [o.code for o in decide(b, scores, {"A"}, px, True, False, p) if o.side == "sell"] == ["H1"]
+
+
+# ---------------------------------------------------------------- AIと指数を組み合わせた口座（blend）
+def test_sleeve_rebalance_tax_carry_and_idempotent():
+    from autotrade.blend import Sleeve
+    b = PaperBroker(1_000_000, cost=0.0)
+    sl = Sleeve(share=0.5, tax=0.2)
+    assert sl.new_year(2020, b, b.cash(), 100.0, "2020-01-06")
+    assert sl.value(100.0) == pytest.approx(500_000) and b.cash() == pytest.approx(500_000)
+    assert not sl.new_year(2020, b, b.cash(), 100.0)  # 同じ年に2回はしない
+    # 2020年: AI の部分が 500,000 → 400,000（損 100,000 は繰り越し）、指数は2倍
+    b._cash = 400_000
+    sl.new_year(2021, b, 400_000, 200.0, "2021-01-04")
+    assert sl.taxes_paid == 0 and sl.carry == [[2020, 100_000]]
+    total = 400_000 + 1_000_000
+    assert sl.value(200.0) + b.cash() == pytest.approx(total)
+    assert sl.value(200.0) == pytest.approx(total / 2)
+    # 2021年: AI の部分が +300,000 → 繰り越しの 100,000 を引いた 200,000 に 20% = 40,000
+    ai = b.cash() + 300_000
+    b._cash = ai
+    sl.new_year(2022, b, ai, 200.0)
+    assert sl.taxes_paid == pytest.approx(40_000) and sl.carry == []
+    # まだ払っていない今年の税
+    assert sl.pending_tax(sl.ai_start + 50_000, 2022) == pytest.approx(10_000)
+
+
+def test_sleeve_rebalances_with_cash_only():
+    from autotrade.blend import Sleeve
+    b = PaperBroker(1_000_000, cost=0.0)
+    sl = Sleeve(share=0.5)
+    sl.new_year(2020, b, b.cash(), 100.0)
+    b.submit([Order("A", "buy", 4000, 100.0)])
+    b.execute_open("d", {"A": 100.0})   # 現金をほぼ使い切る
+    sl.new_year(2021, b, b.equity({"A": 200.0}), 50.0)  # 指数が半分になっても、AI の保有は売らない
+    assert b.positions()["A"].shares == 4000 and b.cash() >= 0
+
+
+def test_sim_index_only_and_blend(synth):
+    o, h, l, c, v, mkt = synth
+    T, N = c.shape
+    S = np.random.default_rng(4).random((T, N))
+    m = _mk_market(c, o)
+    lvl = np.linspace(100, 200, T)  # 指数は2倍に
+    only = sim.run(m, S, np.ones((T, N), bool), Params(index_share=1.0), index_level=lvl)
+    assert only["equity"].iloc[-1] == pytest.approx(2_000_000, rel=1e-6)
+    assert len(only["trades"]) == 0
+    mix = sim.run(m, S, np.ones((T, N), bool), Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20, index_share=0.5),
+                  index_level=lvl)
+    ai = sim.run(m, S, np.ones((T, N), bool), Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20))
+    assert len(mix["trades"]) > 0
+    # 組み合わせは、AI だけと指数だけの間に入る（年1回の戻しなので厳密な平均ではない）
+    lo, hi = sorted([ai["equity"].iloc[-1], 2_000_000])
+    assert lo * 0.8 <= mix["equity"].iloc[-1] <= hi * 1.2
+    with pytest.raises(ValueError):
+        sim.run(m, S, np.ones((T, N), bool), Params(index_share=0.5))
+    taxed = sim.run(m, S, np.ones((T, N), bool), Params(n_hold=5, rebalance_every=5, keep_rank=10, depth=20, tax_ai=0.2))
+    if ai["equity"].iloc[-1] > 1_000_000:
+        assert taxed["equity"].iloc[-1] < ai["equity"].iloc[-1]
+
+
+def test_index_levels_lag_and_fee():
+    from autotrade.blend import index_levels
+    us = pd.bdate_range("2024-01-01", periods=10)
+    ix = pd.DataFrame({"spx_tr": np.arange(1, 11, dtype=float) * 100, "acwi": np.nan, "usdjpy": 100.0}, index=us)
+    cal = us[1:]
+    lvl, src = index_levels(ix, cal, "S&P500")
+    assert pd.Timestamp(src[0]) == us[0]            # 日本の営業日には、前の米国の終値が反映される
+    assert lvl[0] == pytest.approx(100 * 100)
+    assert lvl[5] == pytest.approx(600 * 100 * (1 - 0.001 / 250) ** 5)
+
+
+def test_live_blend_account_rebalances_once_and_flags_stale_index(cfg, synth, monkeypatch):
+    from kabuscout.data import PriceStore
+    from autotrade import live
+    o, h, l, c, v, mkt = synth
+    def save(n):
+        P = {k: x.iloc[:n].assign(**{"^N225": (mkt.iloc[:n] if k != "volume" else 0.0)})
+             for k, x in dict(open=o, high=h, low=l, close=c, volume=v).items()}
+        P["splits"] = pd.DataFrame(np.nan, index=c.index[:n], columns=list(c.columns) + ["^N225"])
+        P["dividends"] = pd.DataFrame()
+        PriceStore(cfg["data"]["price_dir"]).save(P)
+    lag = {"days": 1}
+    def fake_levels(cfg_, cal, name, cache):
+        lv = 100.0 + (cal - pd.Timestamp("2015-01-01")).days.to_numpy() * 0.05  # 日付で決まる値段（毎日少しずつ上がる）
+        src = (cal - pd.Timedelta(days=lag["days"])).to_numpy()
+        return lv, src
+    monkeypatch.setattr(live, "_index_levels", fake_levels)
+    s = live.load_settings()
+    s["model"].update(params=dict(max_iter=10, min_samples_leaf=100), sample_every=5)
+    s["strategy"].update(n_hold=4, keep_rank=8, regime_ma=0, index_share=0.5, index_name="S&P500")
+    s["risk"]["max_order_value"] = 1e9
+    s["shadow_accounts"] = {}
+    k = next(j for j in range(700, 890) if c.index[j].year != c.index[j - 1].year)  # 年の最初の営業日
+    save(k)  # 前の年の最後の日まで
+    r1 = live.daily(cfg, s, notify=False, today=c.index[k - 1])
+    st = json.loads((live.state_dir(cfg) / "state.json").read_text())
+    assert st["sleeve"]["units"] > 0 and st["sleeve"]["year"] == c.index[k - 1].year
+    assert "うち指数（S&P500）" in r1["text"]
+    save(k + 1)  # 新しい年の最初の日
+    r2 = live.daily(cfg, s, notify=False, today=c.index[k])
+    assert "指数の比率を戻す" in r2["text"]
+    st2 = json.loads((live.state_dir(cfg) / "state.json").read_text())
+    assert st2["sleeve"]["year"] == c.index[k].year
+    r3 = live.daily(cfg, s, notify=False, today=c.index[k])  # 同じデータでもう一度: 何もしない
+    st3 = json.loads((live.state_dir(cfg) / "state.json").read_text())
+    assert st3["sleeve"]["units"] == st2["sleeve"]["units"]
+    lag["days"] = 20
+    save(k + 2)
+    r4 = live.daily(cfg, s, notify=False, today=c.index[k + 1])
+    assert "データが古い" in r4["text"]

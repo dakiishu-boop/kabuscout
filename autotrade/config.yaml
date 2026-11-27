@@ -22,6 +22,13 @@ strategy:
 shadow_accounts:
   frozen: {regime_ma: 75, regime_scale: 0.5, risk: {kill_drawdown: 0.50}}
   daily: {rebalance_every: 1, keep_rank: 50, regime_ma: 75, regime_scale: 0.5, risk: {kill_drawdown: 0.65}}
+  # AIと指数を組み合わせた口座（autotrade/blend.py）: 資金の半分を指数、半分を本番の形のAI。毎年初めに比率を戻す。
+  # 2026-11-27 の検証で「指数だけ」より良いとは言えなかった（docs/AUTOTRADE.md）。前向きの記録のために並走させる
+  blend_sp500: {index_share: 0.5, index_name: "S&P500", risk: {kill_drawdown: 0.59}}
+  blend_acwi: {index_share: 0.5, index_name: "全世界株式（オルカン）", risk: {kill_drawdown: 0.61}}
+  # 比べる相手: 指数だけ（AI は使わない）
+  index_sp500: {index_share: 1.0, index_name: "S&P500"}
+  index_acwi: {index_share: 1.0, index_name: "全世界株式（オルカン）"}
 model:
   horizons: [5]           # 5営業日後の順位を学習する（設計期間で20営業日・両方の平均より良かった）
   seeds: 1

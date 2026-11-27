@@ -5,6 +5,7 @@
   screen       今月の目標の比率と、その理由（モメンタムの順位など）を表示
   rebalance    目標の比率に合わせる注文を作る。既定は「表示だけ」（--execute で口座に送る。既定の口座は手元のペーパー口座）
   status       ペーパー口座の状況
+  combo-live   前向きの記録: 日本株のAIのペーパー口座（--db、読むだけ）＋S&P500 の仮の組み合わせ → data/us_scout/combo_live.json
   replay       過去をたどる自動売買の試し運転（毎月 rebalance --execute → ペーパー口座で約定）。--start 2024-01-01
   combo        日本株のAI（kabuscout の data/backtest.json）＋米国株の組み合わせ（円建て・税引き後・NISA）
                --jp-backtest で別の場所の backtest.json。--jp-yen と --us-usd を付けると、今年の分け方の戻し方を表示
@@ -23,7 +24,7 @@ from . import config
 def main(argv=None):
     warnings.filterwarnings("ignore")
     ap = argparse.ArgumentParser(prog="usscout")
-    ap.add_argument("command", choices=["fetch", "backtest", "screen", "rebalance", "status", "combo", "replay"])
+    ap.add_argument("command", choices=["fetch", "backtest", "screen", "rebalance", "status", "combo", "replay", "combo-live"])
     ap.add_argument("--config", help="設定ファイル（既定: usscout.yaml）")
     ap.add_argument("--strategy", help="戦略（既定: usscout.yaml の trading.strategy）")
     ap.add_argument("--broker", help="paper / alpaca（既定: usscout.yaml の trading.broker）")
@@ -32,6 +33,7 @@ def main(argv=None):
     ap.add_argument("--refresh", action="store_true", help="fetch: Wikipedia の銘柄表も取り直す")
     ap.add_argument("--quick", action="store_true", help="backtest: 感度・ランダム比較を省く")
     ap.add_argument("--start", default="2024-01-01", help="replay: 開始日")
+    ap.add_argument("--db", help="combo-live: 日本株版のデータベース（既定: data/kabuscout.db。読むだけ）")
     ap.add_argument("--jp-backtest", help="combo: 日本株版の過去ペーパートレードの結果（既定: data/backtest.json）")
     ap.add_argument("--jp-yen", type=float, help="combo: 今の日本株の口座の額（円）")
     ap.add_argument("--us-usd", type=float, help="combo: 今の米国株の口座の額（ドル）")
@@ -74,6 +76,10 @@ def main(argv=None):
             print(json.dumps(dict(combo.allocation(a.jp_yen, a.us_usd, fx, sh), usdjpy=fx, share=sh), ensure_ascii=False, indent=1))
         else:
             print(combo.markdown(combo.run(cfg, a.jp_backtest)))
+
+    elif a.command == "combo-live":
+        from . import combo
+        print(json.dumps(combo.live(cfg, a.db, a.share), ensure_ascii=False, indent=1))
 
     elif a.command == "replay":
         from . import trader

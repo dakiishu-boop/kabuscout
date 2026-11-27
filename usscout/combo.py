@@ -142,3 +142,74 @@ def allocation(jp_value_jpy: float, us_value_usd: float, usdjpy: float, share: f
     move = share * total - us_jpy
     return {"total_jpy": round(total), "us_target_jpy": round(share * total), "move_jpy": round(move),
             "move_usd": round(move / usdjpy, 2), "direction": "日本株 → 米国株" if move > 0 else "米国株 → 日本株"}
+
+
+# ---- 前向きの記録（読むだけ）: 日本株のAIのペーパー口座の毎日の資産 ＋ S&P500（円建て）→ 仮の組み合わせの口座 ----
+def _connect_ro(db: Path):
+    import sqlite3
+    return sqlite3.connect(f"file:{Path(db).resolve()}?mode=ro", uri=True)
+
+
+def jp_paper_equity(db: Path, table: str = "paper_equity") -> pd.Series:
+    """日本株のペーパー口座の毎日の資産（今の資金の設定の記録だけ）。データベースは読むだけで書き換えない。"""
+    con = _connect_ro(db)
+    try:
+        d = pd.read_sql(f"SELECT date, equity, capital FROM {table} ORDER BY date", con)
+    finally:
+        con.close()
+    if d.empty:
+        raise ValueError("ペーパー口座の資産の記録がありません")
+    d = d[d["capital"] == d["capital"].iloc[-1]]
+    return pd.Series(d["equity"].astype(float).to_numpy(), index=pd.to_datetime(d["date"]), name="ai")
+
+
+def index_prices(cfg: dict) -> pd.DataFrame:
+    """kabuscout.core.load_indices と同じ形（spx_tr・acwi・usdjpy）を usscout の置き場所に取る（日本株のデータには書かない）。"""
+    import yfinance as yf
+    p = cfg["data"]["dir"] / "core_indices.parquet"
+    try:
+        raw = yf.download(["^SP500TR", "ACWI", "JPY=X"], start="2005-01-01", auto_adjust=True, progress=False, group_by="ticker")
+        out = pd.DataFrame({"spx_tr": raw["^SP500TR"]["Close"], "acwi": raw["ACWI"]["Close"], "usdjpy": raw["JPY=X"]["Close"]})
+        out.index = pd.to_datetime(out.index).tz_localize(None).normalize()
+        if len(out.dropna(how="all")) > 1000:
+            out.to_parquet(p)
+    except Exception:
+        pass
+    return pd.read_parquet(p)
+
+
+def live(cfg: dict, db: Path | None = None, share: float | None = None, ix: pd.DataFrame | None = None) -> dict:
+    """前向きの記録。日本株のAIの口座の値動き（資金をそのまま比例で縮めたとみなす）と S&P500（円・配当込み・信託報酬0.1%）を、
+    share の割合で、毎年初めに戻しながら合わせる（kabuscout.core.combined と同じ計算）。"""
+    from kabuscout import core
+    sh = float(share if share is not None else cfg.get("combo", {}).get("us_share", 0.5))
+    ai = jp_paper_equity(Path(db or ROOT / "data" / "kabuscout.db"))
+    ix = ix if ix is not None else index_prices(cfg)
+    sp = core.index_returns_jpy(ix, ai.index)["S&P500"]
+    comb = core.combined(ai, sp, sh)
+    sp_only = (1 + sp).cumprod() / (1 + sp.iloc[0])
+    ai_only = ai / ai.iloc[0]
+    cap = float(ai.iloc[0])
+    # 今の年の始まり（前回の組み直し）からの、それぞれの側の額
+    yr = comb.index[-1].year
+    prev = comb[comb.index.year < yr]
+    t0 = float(prev.iloc[-1]) if len(prev) else 1.0
+    cur = sp[sp.index.year == yr] if len(prev) else sp.iloc[1:]
+    g = ai.pct_change().fillna(0)
+    g = g[g.index.year == yr] if len(prev) else g.iloc[1:]
+    us_v = sh * t0 * float((1 + cur).prod()) * cap
+    jp_v = (1 - sh) * t0 * float((1 + g).prod()) * cap
+    total = us_v + jp_v
+    dd = lambda s: float(s.iloc[-1] / s.cummax().iloc[-1] - 1)  # noqa: E731
+    out = {"start": str(ai.index[0].date()), "end": str(ai.index[-1].date()), "days": int(len(ai)), "us_share": sh,
+           "capital_jpy": cap, "combo_value_jpy": round(float(comb.iloc[-1]) * cap), "combo_return": float(comb.iloc[-1] - 1),
+           "ai_only_return": float(ai_only.iloc[-1] - 1), "sp500_only_return": float(sp_only.iloc[-1] - 1),
+           "combo_drawdown": dd(comb), "ai_only_drawdown": dd(ai_only), "sp500_only_drawdown": dd(sp_only),
+           "sleeves_jpy": {"jp_ai": round(jp_v), "sp500": round(us_v)},
+           "next_rebalance": f"{yr + 1}-01 の最初の営業日",
+           "rebalance_move_jpy": round(sh * total - us_v),
+           "note": "前向きの記録（まだ短い期間）。成績の証拠ではない。日本株のAIの口座・設定は読むだけで変えていない"}
+    root = cfg["data"]["dir"]
+    pd.DataFrame({"combo": comb, "ai_only": ai_only, "sp500_only": sp_only}).to_csv(root / "combo_live.csv")
+    (root / "combo_live.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
+    return out

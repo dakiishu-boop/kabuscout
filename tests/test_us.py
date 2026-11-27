@@ -335,3 +335,31 @@ def test_lev_trend_uses_signal_index(cfg):
     w = strategies.build("lev_trend_spy", cfg)(p.upto(s))
     w1 = strategies.build("trend_spy", cfg, {"cash": "CASH"})(p.upto(s))
     assert (w == {"SSO": 1.0}) == (w1 == {"SPY": 1.0})
+
+
+def test_combo_live_read_only_and_current_capital(cfg, tmp_path):
+    """前向きの記録: 日本株のデータベースは読むだけ（書き換えない）、今の資金の設定の記録だけを使う、kabuscout.core.combined と同じ値。"""
+    import os
+    import sqlite3
+    from kabuscout import core
+    from usscout import combo
+    db = tmp_path / "kabuscout.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE paper_equity (date TEXT, equity REAL, capital REAL)")
+    days = pd.bdate_range("2026-12-01", "2027-02-26")
+    rows = [(str(d.date()), 500000.0 + i * 100, 500000.0) for i, d in enumerate(days[:10])]  # 古い資金の設定（使わない）
+    rows += [(str(d.date()), 1e6 * (1 + 0.001 * i), 1e6) for i, d in enumerate(days[10:])]
+    con.executemany("INSERT INTO paper_equity VALUES (?,?,?)", rows)
+    con.commit()
+    con.close()
+    before = (os.path.getmtime(db), db.read_bytes())
+    ix = pd.DataFrame({"spx_tr": 100 * np.cumprod(np.full(len(days) + 5, 1.002)), "acwi": 100.0, "usdjpy": 150.0},
+                      index=pd.bdate_range("2026-11-24", periods=len(days) + 5))
+    out = combo.live(cfg, db, share=0.5, ix=ix)
+    assert (os.path.getmtime(db), db.read_bytes()) == before
+    ai = combo.jp_paper_equity(db)
+    assert ai.index[0] == days[10] and len(ai) == len(days) - 10
+    sp = core.index_returns_jpy(ix, ai.index)["S&P500"]
+    assert out["combo_value_jpy"] == round(float(core.combined(ai, sp, 0.5).iloc[-1]) * 1e6)
+    assert sum(out["sleeves_jpy"].values()) == pytest.approx(out["combo_value_jpy"], abs=2)
+    assert out["next_rebalance"].startswith("2028-01")

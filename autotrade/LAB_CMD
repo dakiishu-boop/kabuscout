@@ -1,1 +1,3 @@
-python -m autotrade.lab opencheck --dates 40
+pip install -q pytest==8.3.3
+python -m pytest -q
+python -m autotrade.lab live

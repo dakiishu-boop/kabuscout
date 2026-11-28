@@ -74,3 +74,19 @@ python -m kabuscout restore --from /tmp/kabuscout-backup
   - リポジトリ側: kabuscout-backup の Settings → Deploy keys の「kabuscout-actions」（書き込み可）
   - 本体側: Secrets の `BACKUP_DEPLOY_KEY`
 - 鍵を作り直すときは、両方を入れ替えてください。
+
+## TDnet の PDF（Mac の data/tdnet_pdf）
+
+- 決算短信・業績予想の修正の PDF は、Mac の夜のジョブ（21:45、`com.kabuscout.pdfarchive`）が `data/tdnet_pdf/` に保存しています。
+- 保存のあと同じジョブが、まだ控えていない PDF を **kabuscout-backup のリリース**（月ごとに `tdnet-pdf-YYYY-MM`）に tar で足します（`kabuscout/pdf_backup.py`）。
+  - 前に送った tar は上書きしません。どの PDF がどの tar にあるかは、各リリースの `index.json` に書いてあります。
+  - 送る前に毎回、リポジトリが private かを確かめます。
+  - 控えに失敗しても PDF の保存はそのままです。次の晩に、まだ送っていない分をまとめて送ります（`logs/pdf_archive.log` に残ります）。
+- 控えてあるか確かめる: `.venv/bin/python -m kabuscout.pdf_backup check`（`not_sent` と `missing_asset` が 0 なら全部あります）
+- Mac が壊れた・新しくしたときの戻し方:
+
+  ```bash
+  .venv/bin/python -m kabuscout.pdf_backup restore
+  ```
+
+  リリースの tar を全部取ってきて `data/tdnet_pdf/` に戻し、`index.json` の sha256 と照らします（`bad` が 0 なら全部合っています）。すでにある PDF は上書きしません。

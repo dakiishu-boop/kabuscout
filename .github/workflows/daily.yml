@@ -9,9 +9,12 @@ on:
     # 空いていそうな時刻にする。Yahooのデータの確定（15:55頃）までは自動で待つ
     - cron: "53 6 * * 1-5"
     # 予備（2026-11-24 に GitHub が定時実行を丸ごと飛ばした）: 18:23 と 20:43 JST にもう一度起動する。
-    # その日の 15:30 以降に成功した実行があれば、下の check ジョブが何もせずに終わる（二重の実行・通知はしない）
+    # その日の分の結果がもうWebに出ていれば、下の check ジョブが何もせずに終わる（二重の実行・通知はしない）
     - cron: "23 9 * * 1-5"
     - cron: "43 11 * * 1-5"
+    # 予備（2026-11-25・27 は3回とも約10時間遅れて夜中に起動し、その時刻の Yahoo に前の日の株価がほぼ無かった）:
+    # 翌朝 8:17 JST（場が開く前・米国の市場も閉まった後）にも起動する。15:30 より前の起動は前の日の分として扱う
+    - cron: "17 23 * * 1-5"
   workflow_dispatch:
     inputs:
       args:
@@ -43,25 +46,23 @@ jobs:
   # concurrency で前の実行が終わるまで待ってから確かめるので、本番の実行と予備が同時に走ることはない。手動の実行はいつも動く
   check:
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
+    permissions: {}
     outputs:
       skip: ${{ steps.done.outputs.skip }}
     steps:
       - id: done
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
           # 「その日」= 今より前で一番近い 15:30 JST。起動が日付をまたいで遅れても（2026-11-25 の分が翌日の深夜2〜5時に起動した）、
-          # 前の日の分として数える（翌日の 15:30 からと数えると、もう済んでいる日を取り違える）
+          # 前の日の分として数える
           day=$(TZ=Asia/Tokyo date +%F)
           if [ "$(TZ=Asia/Tokyo date +%H%M)" -lt 1530 ]; then day=$(TZ=Asia/Tokyo date -d "${day} -1 day" +%F); fi
-          since=$(date -u -d "TZ=\"Asia/Tokyo\" ${day} 15:30" +%Y-%m-%dT%H:%M:%SZ)
-          n=$(gh api "repos/${{ github.repository }}/actions/workflows/daily.yml/runs?status=success&created=>=${since}&per_page=50" \
-                --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length')
-          echo "${day} の分（${since} 以降）に成功した実行: ${n} 回"
-          if [ "${n}" -gt 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
+          # 済んだかどうかは、Webの status.json の「次に処理が要る営業日」で決める。実行の成否で決めると、株価が揃わずに
+          # 何もせず終わった実行も「成功」に数えて、後の予備が止まってしまう（ジャーナル §91）。祝日はその日より後になるので何もしない。読めなければ実行する
+          nxt=$(curl -fsS --max-time 20 "https://dakiishu-boop.github.io/kabuscout/status.json?t=$(date +%s)" \
+                | python3 -c 'import json, sys; print(json.load(sys.stdin).get("next_needed") or "")' 2>/dev/null || true)
+          echo "${day} の分: 次に処理が要る営業日 = ${nxt:-（読めない）}"
+          if [ -n "${nxt}" ] && [ "${day}" \< "${nxt}" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
 
   screen:
     needs: check

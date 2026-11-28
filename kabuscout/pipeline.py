@@ -87,6 +87,52 @@ def _usable_date(store, cutoff: pd.Timestamp) -> pd.Timestamp:
     return ok.index[-1]
 
 
+def expected_day(cutoff: pd.Timestamp) -> pd.Timestamp:
+    """cutoff 以前で一番近い営業日（その日の株価が揃っているはずの日）。"""
+    d = pd.Timestamp(cutoff).normalize()
+    while not is_trading_day(d):
+        d -= pd.Timedelta(days=1)
+    return d
+
+
+PROBE = ["7203", "8306", "6758", "9984"]  # wait_for_close_data と同じ主力株（＋指数ETF）
+
+
+def _probe_has(cfg: dict, want: pd.Timestamp) -> tuple[bool, str]:
+    """主力株5本だけを軽く取って、want の日の足が今の Yahoo にあるか。結果の説明も返す（原因を後で調べるため）。"""
+    tick = [data.ticker(cfg["universe"]["market_proxy"])] + [data.ticker(c) for c in PROBE]
+    try:
+        df = yf.download(tick, period="5d", progress=False, auto_adjust=False, group_by="ticker")
+        c = df.xs("Close", axis=1, level=1)
+        row = c.loc[c.index.normalize() == want]
+        n = int(row.notna().sum(axis=1).max()) if len(row) else 0
+        return n == len(tick), f"確認用 {len(tick)} 本のうち {n} 本に {want.date()} の足（最新 {c.index[-1].date() if len(c) else '無し'}）"
+    except Exception as e:
+        return False, f"確認用の取得に失敗: {e}"
+
+
+def _refetch_if_incomplete(store, codes: list[str], cfg: dict, cutoff: pd.Timestamp, update=None, probe=None) -> bool:
+    """最新の営業日の株価が揃っていなければ、主力株だけで今の Yahoo にその日の足があるかを確かめ、あれば1回だけ取り直す。
+    Yahoo は夜中（米国の市場が開いている時間）に前の日の足をほぼ全銘柄で返さないことがあり、何時間も続く
+    （2026-11-25・27 は 3.5 時間ほど 2〜5 銘柄だけ）。待って取り直しても無駄なので、無いときは取り直さずに次の起動に回す（ジャーナル §91）。
+    揃ったら True。"""
+    update, probe = update or data.update_prices, probe or _probe_has
+    want = expected_day(cutoff)
+    if _usable_date(store, cutoff) >= want:
+        return True
+    c = store.load(start=want.strftime("%Y-%m-%d"), end=want.strftime("%Y-%m-%d"), fields=["close"])["close"]
+    have = sorted(c.columns[c.notna().any()]) if len(c) else []
+    ok, why = probe(cfg, want)
+    log.warning("%s の株価が揃っていない（%d 銘柄だけ: %s）。%s", want.date(), len(have), ", ".join(have[:10]), why)
+    if ok:
+        log.info("確認用の主力株には足があるので、全銘柄を1回だけ取り直します")
+        update(store, codes, cfg)
+        if _usable_date(store, cutoff) >= want:
+            return True
+    log.warning("%s の株価が揃わないまま続けます（この日の分は次の起動で処理します）", want.date())
+    return False
+
+
 def params_path(cfg: dict):
     return cfg["data"]["db_path"].parent / "strategy_params.json"
 
@@ -116,6 +162,7 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     except Exception as e:
         log.warning("海外市場・為替の更新に失敗（前回の値で続行）: %s", e)
 
+    _refetch_if_incomplete(store, uni["code"].tolist() + [proxy], cfg, _cutoff())
     cutoff = _usable_date(store, _cutoff())
     data_date = cutoff.strftime("%Y-%m-%d")
     done = con.execute("SELECT status FROM runs WHERE data_date=?", (data_date,)).fetchone()

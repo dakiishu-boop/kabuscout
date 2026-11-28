@@ -207,7 +207,7 @@ def simulate(preds: pd.DataFrame, cal: pd.DatetimeIndex, cfg: dict, pick: str = 
             n_new = min(n_new, gate["max_new"])
         if n_new <= 0:
             continue
-        g = g.sort_values("prob", ascending=False) if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
+        g = learner.order_by(g, "prob") if pick == "ai" else g.sample(frac=1, random_state=rng.integers(1e9))
         g = g.head(scan)
         if pick == "ai" and acc.get("consensus") and "agreement" in g:  # 合意モード: 上位の中で、3つのモデルが揃って高く評価した候補だけ（本番と同じ順）
             g = g[g["agreement"] >= acc["consensus"]]

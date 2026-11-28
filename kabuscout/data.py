@@ -267,7 +267,7 @@ def last_final_day(now: datetime | None = None) -> pd.Timestamp:
 
 def drop_unfinished(out: dict, last: pd.Timestamp) -> dict:
     """last より後の足（場中の途中経過）を落とす。朝の予備起動が途中の値段を保存して、
-    夕方の差分で「分割の疑い」と取り違えないように（ジャーナル §91）。"""
+    夕方の差分で「分割の疑い」と取り違えないように（ジャーナル §100）。"""
     return {f: (v if v.empty else v[v.index <= last]) for f, v in out.items()}
 
 

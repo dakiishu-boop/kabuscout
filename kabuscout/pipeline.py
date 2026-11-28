@@ -114,7 +114,7 @@ def _probe_has(cfg: dict, want: pd.Timestamp) -> tuple[bool, str]:
 def _refetch_if_incomplete(store, codes: list[str], cfg: dict, cutoff: pd.Timestamp, update=None, probe=None) -> bool:
     """最新の営業日の株価が揃っていなければ、主力株だけで今の Yahoo にその日の足があるかを確かめ、あれば1回だけ取り直す。
     Yahoo は夜中（米国の市場が開いている時間）に前の日の足をほぼ全銘柄で返さないことがあり、何時間も続く
-    （2026-11-25・27 は 3.5 時間ほど 2〜5 銘柄だけ）。待って取り直しても無駄なので、無いときは取り直さずに次の起動に回す（ジャーナル §91）。
+    （2026-11-25・27 は 3.5 時間ほど 2〜5 銘柄だけ）。待って取り直しても無駄なので、無いときは取り直さずに次の起動に回す（ジャーナル §100）。
     揃ったら True。"""
     update, probe = update or data.update_prices, probe or _probe_has
     want = expected_day(cutoff)

@@ -130,8 +130,16 @@ def build(con, cfg: dict, out_dir: Path | None = None) -> Path:
 def write_status(con, out_dir: Path) -> Path:
     """最後に処理が済んだデータ日付だけを書いた小さなファイル。daily.yml の予備起動が「その日の分はもう済んだか」を
     これで判断する（実行の成否では、株価が揃わずに何もせず終わった実行も「成功」に数えてしまう。ジャーナル §91）。"""
+    from .pipeline import is_trading_day
     row = con.execute("SELECT MAX(data_date) FROM runs WHERE status='ok'").fetchone()
+    last = row[0] if row else None
+    nxt = None
+    if last:  # 次に処理が要る営業日（祝日の日に予備の起動が全銘柄を取りに行かないように）
+        d = pd.Timestamp(last) + pd.Timedelta(days=1)
+        while not is_trading_day(d):
+            d += pd.Timedelta(days=1)
+        nxt = d.strftime("%Y-%m-%d")
     path = out_dir / "status.json"
-    path.write_text(json.dumps(dict(data_date=row[0] if row else None,
+    path.write_text(json.dumps(dict(data_date=last, next_needed=nxt,
                                     generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"))))
     return path

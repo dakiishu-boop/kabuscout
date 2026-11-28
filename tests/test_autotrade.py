@@ -1,4 +1,6 @@
 """autotrade（自動売買）のテスト。作り物のデータだけを使う（ネット・実データ・APIキーなし）。"""
+from __future__ import annotations
+
 import json
 from pathlib import Path
 

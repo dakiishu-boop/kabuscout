@@ -363,3 +363,27 @@ def test_combo_live_read_only_and_current_capital(cfg, tmp_path):
     assert out["combo_value_jpy"] == round(float(core.combined(ai, sp, 0.5).iloc[-1]) * 1e6)
     assert sum(out["sleeves_jpy"].values()) == pytest.approx(out["combo_value_jpy"], abs=2)
     assert out["next_rebalance"].startswith("2028-01")
+
+
+def test_combine_n_extremes_and_two_sleeve_match(cfg):
+    """3つの口座の組み合わせ: 1つに100%ならその資産と同じ、金0%なら combo.combine（AI＋S&P500）と同じ。"""
+    from usscout import combo, multiasset
+    idx = pd.date_range("2008-01-04", "2013-12-27", freq="W-FRI")
+    rng = np.random.default_rng(2)
+    mk = lambda: pd.Series(np.cumprod(1 + rng.normal(0.002, 0.02, len(idx))), index=idx)  # noqa: E731
+    curves = {"sp": mk(), "gold": mk(), "jp": mk()}
+    costs = {"jp": 0.001, "gold": 0.001, "sp": 0.00545 + 0.25 / 100.0}
+    for k in curves:
+        s = multiasset.combine_n(curves, {k: 1.0}, set(), costs, cfg)
+        assert s.iloc[-1] == pytest.approx(curves[k].iloc[-1] / curves[k].iloc[0], rel=1e-9)
+    fx = pd.Series(100.0, index=idx)
+    two = combo.combine(curves["jp"], curves["sp"], 0.5, us_taxed=False, cfg=cfg, fx=fx)
+    three = multiasset.combine_n(curves, {"sp": 0.5, "gold": 0.0, "jp": 0.5}, {"jp"}, costs, cfg)
+    assert three.iloc[-1] == pytest.approx(two.iloc[-1] / two.iloc[0], rel=1e-9)
+
+
+def test_ts_momentum_weights(cfg):
+    p = D.with_cash(make_panel())
+    s = D.month_ends(p.dates)[30]
+    w = strategies.build("ts_momentum", cfg, {"universe": ["SPY", "EFA", "TLT", "GLD", "XLE"]})(p.upto(s))
+    assert sum(w.values()) == pytest.approx(1.0) and all(v >= 0 for v in w.values())

@@ -93,4 +93,5 @@ def etf_symbols(cfg: dict) -> list[str]:
     for v in st.values():  # 各戦略の asset / signal（2倍の ETF など）
         if isinstance(v, dict):
             out += [v[k] for k in ("asset", "signal") if isinstance(v.get(k), str) and v[k] != "CASH"]
+            out += [x for x in v.get("universe", []) if isinstance(x, str)]
     return list(dict.fromkeys(out + EXTRA))

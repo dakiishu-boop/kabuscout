@@ -192,6 +192,37 @@ class StockMomentum(Strategy):
         return w
 
 
+class TSMomentum(Strategy):
+    """17資産の上昇トレンドに乗る・買いだけ（ジャーナル §94 の D）。月末に、12か月の騰落が短期金利より高い資産だけを持つ。
+    重みは値動きの大きさ（直近 vol_days 営業日）の逆数で全資産に割り振った枠。トレンドが無い資産の枠は米ドルMMF（合計は最大1倍）。"""
+    name = "ts_momentum"
+
+    def target(self, p, members=None):
+        P = self.p
+        cash = P["cash"]
+        uni = [u for u in P["universe"] if u in p.close.columns]
+        c = p.close[uni]
+        L = int(P.get("lookback_months", 12))
+        n, vd = int(L * M), int(P.get("vol_days", 63))
+        if len(c) <= max(n, vd) + 1:
+            return {cash: 1.0}
+        r12 = c.iloc[-1] / c.iloc[-1 - n] - 1
+        vol = c.iloc[-vd - 1:].pct_change().std() * np.sqrt(252)
+        ok = r12.notna() & vol.notna() & (vol > 0) & c.iloc[-1].notna()
+        if not ok.any():
+            return {cash: 1.0}
+        inv = 1 / vol[ok]
+        budget = inv / inv.sum()
+        cr = cash_return(p, L)
+        w = {k: float(budget[k]) for k in budget.index if r12[k] > cr}
+        rest = 1 - sum(w.values())
+        if rest > 1e-9:
+            w[cash] = w.get(cash, 0) + rest
+        self._why = [{"symbol": k, "ret_12m": round(float(r12[k]), 4), "vol": round(float(vol[k]), 4), "budget": round(float(budget[k]), 4),
+                      "on": bool(r12[k] > cr)} for k in budget.index]
+        return w
+
+
 class EqualWeight(Strategy):
     """その時点の構成銘柄（株価のある銘柄）を全部同じ金額ずつ（物差し: 同じ母集団・同じ生存者バイアス）。"""
     name = "equal_weight"
@@ -220,7 +251,7 @@ class Blend(Strategy):
 
 
 REGISTRY = {"gem": GEM, "etf_rotation": ETFRotation, "trend_spy": TrendHold, "trend_qqq": TrendHold, "stock_mom": StockMomentum,
-            "lev_trend_spy": TrendHold, "vol_managed_spy": VolManaged}
+            "lev_trend_spy": TrendHold, "vol_managed_spy": VolManaged, "ts_momentum": TSMomentum}
 NEEDS_MEMBERS = {"stock_mom", "equal_weight", "blend"}
 
 

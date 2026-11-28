@@ -8,6 +8,8 @@ data/ は GitHub Actions のキャッシュだけで引き継いでいる。キ�
 - strategy_params.json（研究ループが採用した設定と影の候補）、forward.json・backtest.json・research.json など小さい結果
 保存先は private のリポジトリで、その日の分を「latest」と、曜日・週・月の枠のブランチに上書きで置く
 （壊れた日の分が上書きしても、別の枠に前の日の分が残る。履歴は枠の数だけなので容量は増え続けない）。
+手元に貯めた TDnet の PDF（data/tdnet_pdf）は Mac にしか無く大きいので、ここ（ブランチ）には入れず、同じリポジトリの
+「リリース」に Mac から控える（pdf_backup.py、ジャーナル §103）。
 復元は restore（manifest の指紋・行数を確かめてから data/ に戻す）。drill は一時フォルダに戻して確かめる（月1回の試し戻し）。
 """
 from __future__ import annotations

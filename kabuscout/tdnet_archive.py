@@ -5,6 +5,7 @@ TDnet は書類を約1ヶ月しか残さない。Claude API を止めている�
 - 対象: tdnet_reasons（業績予想の修正・差異）と tdnet_quals（決算短信）が読む題名と同じ
 - 保存先: data/tdnet_pdf/YYYY/MM/<id>.pdf（data/ は Git に入れない・公開しない）。すでにある書類は取りに行かない
 - Claude API は使わない（費用 0）。TDnet への取得は1件ごとに間を空ける
+- 保存のあと、まだ控えていない PDF を private のバックアップ用リポジトリのリリースに送る（pdf_backup.py、ジャーナル §103）
 使い方: python -m kabuscout.tdnet_archive [直近の日数（既定 30）] [時間の上限（分、既定 90）]
 """
 from __future__ import annotations
@@ -92,4 +93,11 @@ if __name__ == "__main__":
     from .config import load_config
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
     a = sys.argv[1:]
-    print(update(load_config(), days=int(a[0]) if a else 30, max_minutes=float(a[1]) if len(a) > 1 else 90))
+    c = load_config()
+    print(update(c, days=int(a[0]) if a else 30, max_minutes=float(a[1]) if len(a) > 1 else 90))
+    from . import pdf_backup
+    try:  # 控えに失敗しても保存した PDF はそのまま。次の晩に、まだ送っていない分をまとめて送る
+        print(pdf_backup.backup(c))
+    except Exception as e:
+        log.error("PDF の控えに失敗: %s", e)
+        sys.exit(1)

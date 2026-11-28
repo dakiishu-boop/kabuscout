@@ -1,0 +1,107 @@
+# USScout（米国株版）の設定。日本株の config.yaml とは別（日本株の本番には影響しない）
+# 詳しくは docs/US.md。数字の根拠は docs/JOURNAL.md §93
+
+data:
+  dir: data/us_scout          # 株価・銘柄表・ペーパー口座の置き場所（data/ は git に入らない）
+  start: "2005-01-01"         # 12か月のモメンタムを 2008-01 から使うため、少し前から取得
+
+backtest:
+  start: "2008-01-01"         # 日本株版の検証期間（2008〜2026年）に合わせる
+  # 金庫: この日以降は研究中に見ない。最後に1回だけ確かめる（日本株版の research.vault_days と同じ考え方）
+  vault_start: "2024-12-01"
+  capital_usd: 6700           # 100万円 ≒ 6,700ドル（日本株版のペーパー口座と同じ規模）
+  # 約定: 月末の終値で判定 → 次の営業日の寄付（日本時間 23:30）の成行。日本から夜に注文を出せば間に合う
+  execution: open
+  # 1株単位で買う（False なら端数株もあり＝理想化）。株価は分割前の実際の値段で判定
+  integer_shares: true
+  # 同じ銘柄を持ち続けるとき、比率のずれがこの値（資金に対する割合）未満なら売買しない（コストの節約）
+  rebalance_band: 0.05
+
+costs:
+  # SBI証券の米国株の手数料（約定代金の0.495%、片道）。日本株版の kabuscout/us.py・ジャーナル §57 と同じ値
+  commission: 0.00495
+  # 手数料の上限（ドル/注文）。上限があると公表されている場合でも、確認できていないので既定は「上限なし」（厳しめ）
+  commission_cap_usd: null
+  # 気配の差・滑り（片道）。S&P500 の銘柄と主要 ETF は売買が多いので 0.05%
+  spread: 0.0005
+  # 為替の手数料（円→ドル、ドル→円 の片道ごと、1ドルあたりの円）。最初の両替と最後の両替だけにかかる（要確認の前提）
+  fx_spread_jpy: 0.25
+
+tax:
+  # 税引き後の参考値（ジャーナル §61 と同じ簡略計算）: 毎年末にその年の利益の 20.315% を差し引き、損失は3年繰越
+  rate: 0.20315
+  carry_years: 3
+
+# 戦略（最初に決めた5つ＋後から足した trend_spy。条件は文献の定番の値で、過去データで調整していない。ジャーナル §93）
+strategies:
+  gem:                        # Antonacci のデュアルモメンタム（Global Equities Momentum）
+    risk: [SPY, EFA]
+    safe: AGG
+    cash: BIL
+    lookback_months: 12
+  etf_rotation:               # 18本の ETF から、1・3・6・12か月の騰落の平均が高い3本。マイナスの枠は短期国債（BIL）
+    universe: [SPY, QQQ, IWM, EFA, EEM, XLK, XLF, XLE, XLV, XLY, XLP, XLI, XLU, XLB, TLT, IEF, GLD, VNQ]
+    cash: BIL
+    top: 3
+    windows_months: [1, 3, 6, 12]
+  trend_spy:                  # S&P500 を「月末の終値が10か月平均より上」のときだけ持つ（Faber の方式）。下なら短期国債
+    asset: SPY
+    cash: BIL
+    sma_months: 10
+  trend_qqq:                  # 同じ方式の NASDAQ100 版。注意: QQQ を選んだのは過去の成績を見た後（後知恵）。参考として残す
+    asset: QQQ
+    cash: BIL
+    sma_months: 10
+  stock_mom:                  # S&P500（その時点の構成銘柄）の 12−1 か月モメンタム上位10銘柄
+    top: 10
+    keep_rank: 20             # 持っている銘柄は順位が20位以内なら持ち続ける（売買回数を減らす）
+    lookback_months: 12
+    skip_months: 1
+    stock_sma_days: 200       # 個別株: 終値が200日平均より上の銘柄だけ
+    market: SPY
+    market_sma_months: 10     # 地合い: SPY が10か月平均より下なら全部 BIL へ
+    cash: BIL
+  # ---- S&P500 を超えるアイデアの候補（ジャーナル §94・§95）。**どちらも事前に決めた基準で不合格**（研究の後の期間・米国以外で S&P500 に負けた）。
+  # 既定にはしない。前向きのペーパー口座で見守るときだけ `--strategy` で選ぶ。2倍の ETF は NISA の対象外（特定口座）。
+  # 2倍の ETF の過去の最大下落は −50% 前後なので、trading.stop_dd（35%）で新規の買いが止まり、過去の検証と違う動きになることがある
+  lev_trend_spy:              # §94: SPY が10か月平均より上なら2倍の S&P500（SSO）、下なら米ドルMMF
+    signal: SPY
+    asset: SSO
+    cash: CASH
+    sma_months: 10
+  vol_managed_spy:            # §95: 指数への投資比率 = 長期の分散 ÷ 直近21営業日の分散（0〜2倍）。SSO を 比率/2、残りを米ドルMMF
+    signal: SPY
+    asset: SSO
+    cash: CASH
+    leverage: 2.0
+    cap: 2.0
+    window_days: 21
+  ts_momentum:                # §97 D: 17資産の上昇トレンド（買いだけ）。**事前の基準で不合格**（2008〜 年率 +1.3%）。研究用に残す
+    universe: [SPY, EFA, EEM, EWJ, TLT, IEF, GLD, SLV, USO, DBC, UNG, FXE, FXY, FXA, FXB, FXF, VNQ]
+    cash: CASH
+    lookback_months: 12
+    vol_days: 63
+  blend:                      # etf_rotation と stock_mom に半分ずつ
+    parts: {etf_rotation: 0.5, stock_mom: 0.5}
+
+# 自動売買（docs/US.md「自動売買」）。既定は手元のペーパー口座だけ。実際のお金は動かない
+trading:
+  # 既定は「S&P500 を持ち続ける」。2008〜2026年の検証で、売買する戦略はどれも手数料・税金の後で SPY に負けた（ジャーナル §93）。
+  # 入金などで増えた現金は、資金の5%（backtest.rebalance_band）を超えたら月末の組み直しで SPY に回す。
+  # ほかの戦略（trend_spy・etf_rotation・stock_mom・blend・gem）も名前を書けば使える
+  strategy: hold_spy
+  broker: paper               # paper（手元の作り物の口座） / alpaca（未検証のひな形）
+  # 実際のお金で発注するには、ここを true にし、さらに環境変数 USSCOUT_LIVE=1 が必要（両方そろわないと拒否）
+  live: false
+  # 安全装置
+  max_order_fraction: 0.40    # 1注文で資金のこの割合を超えない
+  max_turnover: 2.10          # 1回の組み直しの売買の合計が資金のこの倍を超えたら止める（全部を入れ替えると売り1倍＋買い1倍＝2倍。それを超えたらデータ異常の疑い）
+  max_data_age_days: 4        # 株価データの最終日がこれより古ければ発注しない
+  stop_dd: 0.35               # 口座の最高値からの下落がこれを超えたら新規の買いを止める
+  min_order_usd: 25           # これより小さい注文は出さない
+
+# 日本株のAI（kabuscout）と米国株を合わせる資金の分け方（python -m usscout combo、ジャーナル §93）。
+# 2008〜2026年・円建て・税引き後: 日本株のAIだけ +7.0%（最大下落 −38%）→ 米国 30% +9.4%（−30%）、50% +10.8%（−29%）、70% +11.9%（−38%）
+# 米国の側は S&P500 を NISA で持ち続ける。毎年初めに `combo --jp-yen 今の円 --us-usd 今のドル` で動かす金額を出す
+combo:
+  us_share: 0.5

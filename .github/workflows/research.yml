@@ -41,13 +41,13 @@ jobs:
       pages: ${{ steps.pages.outputs.ready }}
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: cache
         with:
           path: data
@@ -59,7 +59,7 @@ jobs:
 
       - name: Check out backup (restore only)
         if: github.event.inputs.restore_from_backup == 'true' && steps.cache.outputs.cache-matched-key == ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: dakiishu-boop/kabuscout-backup
           ref: ${{ github.event.inputs.backup_branch || 'latest' }}
@@ -81,15 +81,16 @@ jobs:
           COMMAND: ${{ github.event.inputs.command || (github.event.schedule == '0 0 * * 0' && 'research-ai') || 'research' }}
         run: python -m kabuscout "$COMMAND" $ARGS
       # 成功したときだけ保存する（失敗した実行の書きかけのファイルを翌日に引き継がない）
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         with:
           path: data
           key: kabuscout-data-${{ github.run_id }}
 
       # Webページの公開用ファイルは、バックアップより前に上げる（バックアップが失敗しても公開は止めない。失敗は赤く残る）
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+          include-hidden-files: true  # v4 からドットで始まるファイル（.nojekyll）を入れなくなったので、前と同じ中身にする
       - id: pages
         run: echo "ready=true" >> "$GITHUB_OUTPUT"
 
@@ -99,7 +100,7 @@ jobs:
         run: echo "::warning::BACKUP_DEPLOY_KEY が未登録のため、取り直せないデータのバックアップをしていません（docs/RESTORE.md）"
       - name: Check out backup repository
         if: env.HAS_BACKUP_KEY == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: dakiishu-boop/kabuscout-backup
           ref: latest
@@ -119,4 +120,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

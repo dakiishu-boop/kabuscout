@@ -186,6 +186,31 @@ def final(market, Sl, elig, p0: Params) -> None:
     print("FINAL PASSED " + json.dumps(passed))
 
 
+def risk_menu(market, Sl, elig, p0: Params) -> None:
+    """リスクの好みの選択肢（改善の探索ではない、docs/RESEARCH_RULES.md の 2）: 弱い相場（日経平均が75日線の下）で持つ数を
+    2・3・4・5銘柄にしたときの、年率と下落の深さの交換を同じ条件で並べる（ユーザーの依頼「下落は深くないほうがいいが、利益は大きく」、ジャーナル §102）。"""
+    menu = [("weak=2 (frozen)", dict(regime_ma=75, regime_scale=0.5)), ("weak=3", dict(regime_ma=75, regime_scale=0.6)),
+            ("weak=4", dict(regime_ma=75, regime_scale=0.8)), ("weak=5 (now)", dict(regime_ma=0, regime_scale=1.0))]
+    S = Sl[0]
+    Sd = np.vstack([np.full((1, S.shape[1]), np.nan), S[:-1]])
+    real = [("1M 2019+ cost0.2%", S, {}, dict(start="2019-01-01")),
+            ("1M 2019+ cost0.5%+realfills", S, {"cost": 0.005}, dict(start="2019-01-01", realistic_fills=True)),
+            ("1M 2019+ delay1", Sd, {}, dict(start="2019-01-01")),
+            ("1M kept 2008+ lot1000<2018-10", S, {}, dict(start="2008-01-01", withdraw_above=1_000_000,
+                                                          lot_schedule=[("2018-10-01", 1000)]))]
+    for name, diff in menu:
+        p = replace(p0, **diff)
+        full = [sim.run(market, x, elig, p, start="2008-01-01") for x in Sl]
+        st = [sim.stats(r) for r in full]
+        worst = min(x["max_dd"] for x in st[1:])
+        print(f"MENU {name:16s} full(ensemble) {_fmt(st[0])} | worst-seed maxDD {worst * 100:.1f}% | "
+              "seeds " + " ".join(f"{x['cagr'] * 100:+.1f}/{x['max_dd'] * 100:.0f}" for x in st[1:]))
+        for n, x, pk, rk in real:
+            r = sim.run(market, x, elig, replace(p, **pk), capital=1_000_000, **rk)
+            st1 = sim.stats(r)
+            print(f"MENU {name:16s} {n:32s} {_fmt(st1)} | worst year {st1['worst_year'] * 100:+.1f}%")
+
+
 def small(market, S, elig, p0: Params, p1: Params) -> None:
     """ユーザーの実際の資金（100万円）での成績。kabuscout のジャーナル §82 の「100万円で2019年に開始」と同じ見方。"""
     rows = [("1M from 2019", "2019-01-01", {}, {}),
@@ -216,6 +241,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--model-params", default="")
     ap.add_argument("--only", default="A,B,C")
     ap.add_argument("--aggr", action="store_true", help="弱い相場でも減らさない設定を凍結した版と並べる（実行前に条件を固定）")
+    ap.add_argument("--menu", action="store_true", help="弱い相場で持つ数を 2〜5 銘柄にしたときの年率と下落を並べる（リスクの好みの選択肢）")
     ap.add_argument("--final", action="store_true", help="最後の1回: 売買の回数を抑えた毎日入れ替え（5案・事前に固定）")
     ap.add_argument("--small", default="", help='比較用の口座の Params の差分（JSON）。100万円の口座で凍結した版と並べる')
     ap.add_argument("--confirm", default="", help='候補の Params の差分（JSON）。凍結した版と同じ条件で並べて確認する')
@@ -246,6 +272,10 @@ def main(argv: list[str]) -> None:
         return [sim.run(market, S, elig, p, start="2008-01-01") for S in Sl]
 
     S5 = scores(5)
+    if a.menu:
+        risk_menu(market, S5, elig, p0)
+        print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")
+        return
     if a.aggr:
         aggressive(market, S5, elig, p0, replace(p0, regime_ma=0, regime_scale=1.0))
         print(f"IMPROVE TOTAL {time.time() - t0:.0f}s")

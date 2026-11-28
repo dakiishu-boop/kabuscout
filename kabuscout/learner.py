@@ -477,4 +477,11 @@ def score(df: pd.DataFrame, bundle: dict | None, weights: dict[str, float]) -> p
         df["exp_ret"] = np.nan
         df["final_score"] = df["rule_score"].rank(pct=True)
         df["model_version"] = None
-    return df.sort_values("final_score", ascending=False)
+    return order_by(df, "final_score")
+
+
+def order_by(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """点数の高い順。同点は銘柄コードの小さい順に固定する（入力の並び順で結果が変わらないように、ジャーナル §83・§101）。"""
+    if "code" not in df:
+        return df.sort_values(col, ascending=False, kind="mergesort")
+    return df.sort_values([col, "code"], ascending=[False, True], kind="mergesort")

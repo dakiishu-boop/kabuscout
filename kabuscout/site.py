@@ -129,7 +129,7 @@ def build(con, cfg: dict, out_dir: Path | None = None) -> Path:
 
 def write_status(con, out_dir: Path) -> Path:
     """最後に処理が済んだデータ日付だけを書いた小さなファイル。daily.yml の予備起動が「その日の分はもう済んだか」を
-    これで判断する（実行の成否では、株価が揃わずに何もせず終わった実行も「成功」に数えてしまう。ジャーナル §91）。"""
+    これで判断する（実行の成否では、株価が揃わずに何もせず終わった実行も「成功」に数えてしまう。ジャーナル §100）。"""
     from .pipeline import is_trading_day
     row = con.execute("SELECT MAX(data_date) FROM runs WHERE status='ok'").fetchone()
     last = row[0] if row else None

@@ -58,7 +58,7 @@ jobs:
           day=$(TZ=Asia/Tokyo date +%F)
           if [ "$(TZ=Asia/Tokyo date +%H%M)" -lt 1530 ]; then day=$(TZ=Asia/Tokyo date -d "${day} -1 day" +%F); fi
           # 済んだかどうかは、Webの status.json の「次に処理が要る営業日」で決める。実行の成否で決めると、株価が揃わずに
-          # 何もせず終わった実行も「成功」に数えて、後の予備が止まってしまう（ジャーナル §91）。祝日はその日より後になるので何もしない。読めなければ実行する
+          # 何もせず終わった実行も「成功」に数えて、後の予備が止まってしまう（ジャーナル §100）。祝日はその日より後になるので何もしない。読めなければ実行する
           nxt=$(curl -fsS --max-time 20 "https://dakiishu-boop.github.io/kabuscout/status.json?t=$(date +%s)" \
                 | python3 -c 'import json, sys; print(json.load(sys.stdin).get("next_needed") or "")' 2>/dev/null || true)
           echo "${day} の分: 次に処理が要る営業日 = ${nxt:-（読めない）}"

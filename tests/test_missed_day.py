@@ -1,4 +1,4 @@
-"""夜中にずれた起動でその日の分を取りこぼさないための仕組み（ジャーナル §91）。"""
+"""夜中にずれた起動でその日の分を取りこぼさないための仕組み（ジャーナル §100）。"""
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -57,3 +57,40 @@ def test_status_file_shows_the_last_finished_day(cfg, tmp_path):
     con.execute("INSERT OR REPLACE INTO runs VALUES ('2026-11-20','','','ok','')")
     con.execute("DELETE FROM runs WHERE data_date>'2026-11-20'")
     assert json.loads(site.write_status(con, tmp_path).read_text())["next_needed"] == "2026-11-24"  # 土日と祝日（11/23）を飛ばす
+
+
+def test_ties_are_ordered_by_code_whatever_the_input_order():
+    from kabuscout import learner
+    d = pd.DataFrame(dict(code=["9999", "1111", "5555", "2222"], s=[0.5, 0.5, 0.9, 0.5]))
+    a = learner.order_by(d, "s")["code"].tolist()
+    b = learner.order_by(d.iloc[::-1], "s")["code"].tolist()
+    assert a == b == ["5555", "1111", "2222", "9999"]
+
+
+def test_pdf_archive_saves_only_new_targets(cfg):
+    from kabuscout import tdnet_archive as ta
+
+    class R:
+        def __init__(self, j=None, content=b""):
+            self.j, self.content, self.status_code = j, content, 200
+
+        def json(self):
+            return self.j
+
+    items = [dict(id="1", title="2026年3月期 第2四半期決算短信〔日本基準〕(連結)", pubdate="2026-11-10 15:00", document_url="https://x/1.pdf"),
+             dict(id="2", title="業績予想の修正に関するお知らせ", pubdate="2026-11-10 15:00", document_url="https://x/2.pdf"),
+             dict(id="3", title="自己株式の取得状況に関するお知らせ", pubdate="2026-11-10 15:00", document_url="https://x/3.pdf"),
+             dict(id="4", title="（訂正）業績予想の修正に関するお知らせ", pubdate="2026-11-10 15:00", document_url="https://x/4.pdf")]
+    asked = []
+
+    def get(url, **kw):
+        if url.endswith(".pdf"):
+            asked.append(url)
+            return R(content=b"%PDF-1.7 test")
+        return R(j=dict(items=[{"Tdnet": i} for i in items]))
+
+    got = ta.update(cfg, days=1, get=get, sleep=lambda s: None)
+    assert (got["saved"], got["total"]) == (2, 2) and sorted(asked) == ["https://x/1.pdf", "https://x/2.pdf"]
+    assert ta.path_of(cfg, items[0]).read_bytes().startswith(b"%PDF")
+    asked.clear()
+    assert ta.update(cfg, days=1, get=get, sleep=lambda s: None)["saved"] == 0 and asked == []  # 2回目は取りに行かない

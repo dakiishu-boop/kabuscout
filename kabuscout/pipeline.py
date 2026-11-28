@@ -87,6 +87,34 @@ def _usable_date(store, cutoff: pd.Timestamp) -> pd.Timestamp:
     return ok.index[-1]
 
 
+def expected_day(cutoff: pd.Timestamp) -> pd.Timestamp:
+    """cutoff 以前で一番近い営業日（その日の株価が揃っているはずの日）。"""
+    d = pd.Timestamp(cutoff).normalize()
+    while not is_trading_day(d):
+        d -= pd.Timedelta(days=1)
+    return d
+
+
+def _refetch_if_incomplete(store, codes: list[str], cfg: dict, cutoff: pd.Timestamp, update=None) -> bool:
+    """最新の営業日の株価が揃っていなければ、少し待って取り直す（cfg['schedule']['refetch_tries'] 回まで、既定2回・5分おき）。
+    Yahoo はときどき前の日の足をほぼ全銘柄で返さないことがあり（2026-10-21・11-25・11-27 の夜中の実行で 2〜5 銘柄だけ）、
+    そのまま終わるとその日の候補が出ない（ジャーナル §91）。揃ったら True。"""
+    update = update or data.update_prices
+    sc = cfg.get("schedule", {})
+    want = expected_day(cutoff)
+    for i in range(int(sc.get("refetch_tries", 2)) + 1):
+        if _usable_date(store, cutoff) >= want:
+            return True
+        if i == int(sc.get("refetch_tries", 2)):
+            break
+        wait = int(sc.get("refetch_wait_sec", 300))
+        log.warning("%s の株価が揃っていないので、%d 秒後に取り直します（%d 回目）", want.date(), wait, i + 1)
+        time.sleep(wait)
+        update(store, codes, cfg)
+    log.warning("%s の株価が揃わないまま続けます（この日の分は次の起動で処理します）", want.date())
+    return False
+
+
 def params_path(cfg: dict):
     return cfg["data"]["db_path"].parent / "strategy_params.json"
 
@@ -116,6 +144,7 @@ def run_daily(cfg: dict, force: bool = False, retrain: bool = False, notify_on: 
     except Exception as e:
         log.warning("海外市場・為替の更新に失敗（前回の値で続行）: %s", e)
 
+    _refetch_if_incomplete(store, uni["code"].tolist() + [proxy], cfg, _cutoff())
     cutoff = _usable_date(store, _cutoff())
     data_date = cutoff.strftime("%Y-%m-%d")
     done = con.execute("SELECT status FROM runs WHERE data_date=?", (data_date,)).fetchone()

@@ -123,4 +123,15 @@ def build(con, cfg: dict, out_dir: Path | None = None) -> Path:
     path = out_dir / "index.html"
     path.write_text(html)
     (out_dir / ".nojekyll").write_text("")
+    write_status(con, out_dir)
+    return path
+
+
+def write_status(con, out_dir: Path) -> Path:
+    """最後に処理が済んだデータ日付だけを書いた小さなファイル。daily.yml の予備起動が「その日の分はもう済んだか」を
+    これで判断する（実行の成否では、株価が揃わずに何もせず終わった実行も「成功」に数えてしまう。ジャーナル §91）。"""
+    row = con.execute("SELECT MAX(data_date) FROM runs WHERE status='ok'").fetchone()
+    path = out_dir / "status.json"
+    path.write_text(json.dumps(dict(data_date=row[0] if row else None,
+                                    generated=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M"))))
     return path

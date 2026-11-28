@@ -13,6 +13,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -257,6 +258,19 @@ def _download(codes: list[str], batch: int, **kw) -> dict:
     return out
 
 
+def last_final_day(now: datetime | None = None) -> pd.Timestamp:
+    """値段が確定している最新の日付（JST 15:40 より前なら前の日まで。場中の途中の足は保存しない）。"""
+    now = now or datetime.now(ZoneInfo("Asia/Tokyo"))
+    today = pd.Timestamp(now.date())
+    return today if (now.hour, now.minute) >= (15, 40) else today - pd.Timedelta(days=1)
+
+
+def drop_unfinished(out: dict, last: pd.Timestamp) -> dict:
+    """last より後の足（場中の途中経過）を落とす。朝の予備起動が途中の値段を保存して、
+    夕方の差分で「分割の疑い」と取り違えないように（ジャーナル §91）。"""
+    return {f: (v if v.empty else v[v.index <= last]) for f, v in out.items()}
+
+
 def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
     """差分更新。新規銘柄・分割検知銘柄・履歴が設定より短い銘柄は全期間取得。"""
     batch = cfg["data"]["batch_size"]
@@ -281,7 +295,7 @@ def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
     if incremental:
         start = (pd.to_datetime(min(last[c] for c in incremental)) - timedelta(days=10)).strftime("%Y-%m-%d")
         log.info("差分取得: %d 銘柄 (%s〜)", len(incremental), start)
-        recent = _download(incremental, batch, start=start)
+        recent = drop_unfinished(_download(incremental, batch, start=start), last_final_day())
         if not recent["close"].empty:
             # 分割・併合の検知: 既存データと重なる期間の終値が2%以上ずれたら取り直し
             old = store.load(start=start, fields=["close"])["close"]
@@ -302,7 +316,7 @@ def update_prices(store: PriceStore, codes: list[str], cfg: dict) -> None:
 
     if fresh:
         log.info("全期間取得: %d 銘柄 (%s〜)", len(fresh), hstart)
-        full = _download(fresh, batch, start=hstart)
+        full = drop_unfinished(_download(fresh, batch, start=hstart), last_final_day())
         replace = set(full["close"].columns) if not full["close"].empty else set()
         store.upsert(full, replace=replace)
         for c in fresh:

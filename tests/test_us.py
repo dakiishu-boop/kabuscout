@@ -387,3 +387,14 @@ def test_ts_momentum_weights(cfg):
     s = D.month_ends(p.dates)[30]
     w = strategies.build("ts_momentum", cfg, {"universe": ["SPY", "EFA", "TLT", "GLD", "XLE"]})(p.upto(s))
     assert sum(w.values()) == pytest.approx(1.0) and all(v >= 0 for v in w.values())
+
+
+def test_goldlong_mix_extremes():
+    """S&P500＋金の月ごとの組み合わせ: 100% S&P500 なら S&P500 と同じ（組み直しのコストは動かす金額が0なので0）。"""
+    from usscout import goldlong
+    idx = pd.date_range("1990-01-31", periods=60, freq="ME")
+    rng = np.random.default_rng(3)
+    sp = pd.Series(np.cumprod(1 + rng.normal(0.008, 0.04, 60)), index=idx)
+    gd = pd.Series(np.cumprod(1 + rng.normal(0.003, 0.05, 60)), index=idx)
+    assert goldlong.mix(sp, gd, 1.0).iloc[-1] == pytest.approx(sp.iloc[-1] / sp.iloc[0], rel=1e-9)  # 初めを1とする
+    assert goldlong.mix(sp, gd, 0.0).iloc[-1] == pytest.approx(gd.iloc[-1] / gd.iloc[0], rel=1e-9)

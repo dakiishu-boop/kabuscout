@@ -57,6 +57,7 @@ def list_targets(days: int, get=requests.get, sleep=time.sleep) -> list[dict]:
 def update(cfg: dict, days: int = 30, max_minutes: float = 90, get=requests.get, sleep=time.sleep) -> dict:
     t0 = time.time()
     targets = [t for t in list_targets(days, get, sleep) if not path_of(cfg, t).exists()]
+    targets.sort(key=lambda t: pd.Timestamp(t["pubdate"]))  # TDnet から先に消える古い日の分から保存する
     log.info("PDF の保存: 未保存 %d件（直近 %d日）", len(targets), days)
     saved = failed = 0
     size = 0

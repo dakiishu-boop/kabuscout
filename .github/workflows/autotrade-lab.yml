@@ -19,14 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
       # 本番のデータ（株価25年分など）を読むだけで戻す。保存（save）はしない
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         with:
           path: data
           key: kabuscout-data-none

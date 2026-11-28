@@ -1,4 +1,4 @@
-"""§94: 株以外も使うアイデアの検証（D: 17資産の上昇トレンド、C: S&P500＋金＋日本株のAI）。docs/JOURNAL.md §94 の計画どおり。
+"""§97: 株以外も使うアイデアの検証（D: 17資産の上昇トレンド、C: S&P500＋金＋日本株のAI）。docs/JOURNAL.md §97 の計画どおり。
 
 D（17資産の上昇トレンド）:
 - 本命（買いだけ）: usscout の口座のシミュレーション（strategies.TSMomentum・寄付で約定・コスト込み）
@@ -229,7 +229,7 @@ def _p(v):
 
 
 def markdown(rep: dict) -> str:
-    out = ["# §94 株以外も使うアイデア", ""]
+    out = ["# §97 株以外も使うアイデア", ""]
     d = rep["D"]
     for wn in WINDOWS:
         w = d[wn]

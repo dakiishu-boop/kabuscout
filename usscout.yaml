@@ -1,5 +1,5 @@
 # USScout（米国株版）の設定。日本株の config.yaml とは別（日本株の本番には影響しない）
-# 詳しくは docs/US.md。数字の根拠は docs/JOURNAL.md §90
+# 詳しくは docs/US.md。数字の根拠は docs/JOURNAL.md §93
 
 data:
   dir: data/us_scout          # 株価・銘柄表・ペーパー口座の置き場所（data/ は git に入らない）
@@ -32,7 +32,7 @@ tax:
   rate: 0.20315
   carry_years: 3
 
-# 戦略（最初に決めた5つ＋後から足した trend_spy。条件は文献の定番の値で、過去データで調整していない。ジャーナル §90）
+# 戦略（最初に決めた5つ＋後から足した trend_spy。条件は文献の定番の値で、過去データで調整していない。ジャーナル §93）
 strategies:
   gem:                        # Antonacci のデュアルモメンタム（Global Equities Momentum）
     risk: [SPY, EFA]
@@ -61,22 +61,22 @@ strategies:
     market: SPY
     market_sma_months: 10     # 地合い: SPY が10か月平均より下なら全部 BIL へ
     cash: BIL
-  # ---- S&P500 を超えるアイデアの候補（ジャーナル §91・§92）。**どちらも事前に決めた基準で不合格**（研究の後の期間・米国以外で S&P500 に負けた）。
+  # ---- S&P500 を超えるアイデアの候補（ジャーナル §94・§95）。**どちらも事前に決めた基準で不合格**（研究の後の期間・米国以外で S&P500 に負けた）。
   # 既定にはしない。前向きのペーパー口座で見守るときだけ `--strategy` で選ぶ。2倍の ETF は NISA の対象外（特定口座）。
   # 2倍の ETF の過去の最大下落は −50% 前後なので、trading.stop_dd（35%）で新規の買いが止まり、過去の検証と違う動きになることがある
-  lev_trend_spy:              # §91: SPY が10か月平均より上なら2倍の S&P500（SSO）、下なら米ドルMMF
+  lev_trend_spy:              # §94: SPY が10か月平均より上なら2倍の S&P500（SSO）、下なら米ドルMMF
     signal: SPY
     asset: SSO
     cash: CASH
     sma_months: 10
-  vol_managed_spy:            # §92: 指数への投資比率 = 長期の分散 ÷ 直近21営業日の分散（0〜2倍）。SSO を 比率/2、残りを米ドルMMF
+  vol_managed_spy:            # §95: 指数への投資比率 = 長期の分散 ÷ 直近21営業日の分散（0〜2倍）。SSO を 比率/2、残りを米ドルMMF
     signal: SPY
     asset: SSO
     cash: CASH
     leverage: 2.0
     cap: 2.0
     window_days: 21
-  ts_momentum:                # §94 D: 17資産の上昇トレンド（買いだけ）。**事前の基準で不合格**（2008〜 年率 +1.3%）。研究用に残す
+  ts_momentum:                # §97 D: 17資産の上昇トレンド（買いだけ）。**事前の基準で不合格**（2008〜 年率 +1.3%）。研究用に残す
     universe: [SPY, EFA, EEM, EWJ, TLT, IEF, GLD, SLV, USO, DBC, UNG, FXE, FXY, FXA, FXB, FXF, VNQ]
     cash: CASH
     lookback_months: 12
@@ -86,7 +86,7 @@ strategies:
 
 # 自動売買（docs/US.md「自動売買」）。既定は手元のペーパー口座だけ。実際のお金は動かない
 trading:
-  # 既定は「S&P500 を持ち続ける」。2008〜2026年の検証で、売買する戦略はどれも手数料・税金の後で SPY に負けた（ジャーナル §90）。
+  # 既定は「S&P500 を持ち続ける」。2008〜2026年の検証で、売買する戦略はどれも手数料・税金の後で SPY に負けた（ジャーナル §93）。
   # 入金などで増えた現金は、資金の5%（backtest.rebalance_band）を超えたら月末の組み直しで SPY に回す。
   # ほかの戦略（trend_spy・etf_rotation・stock_mom・blend・gem）も名前を書けば使える
   strategy: hold_spy
@@ -100,7 +100,7 @@ trading:
   stop_dd: 0.35               # 口座の最高値からの下落がこれを超えたら新規の買いを止める
   min_order_usd: 25           # これより小さい注文は出さない
 
-# 日本株のAI（kabuscout）と米国株を合わせる資金の分け方（python -m usscout combo、ジャーナル §90）。
+# 日本株のAI（kabuscout）と米国株を合わせる資金の分け方（python -m usscout combo、ジャーナル §93）。
 # 2008〜2026年・円建て・税引き後: 日本株のAIだけ +7.0%（最大下落 −38%）→ 米国 30% +9.4%（−30%）、50% +10.8%（−29%）、70% +11.9%（−38%）
 # 米国の側は S&P500 を NISA で持ち続ける。毎年初めに `combo --jp-yen 今の円 --us-usd 今のドル` で動かす金額を出す
 combo:

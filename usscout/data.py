@@ -130,7 +130,7 @@ CASH = "CASH"  # 米ドルMMF（売買の手数料なし）。値段 = 13週国�
 def with_cash(p: Panel, fee: float = 0.005, irx: str = "^IRX") -> Panel:
     """米ドルMMF を「CASH」という作り物の銘柄として足す（ETF の BIL と違い売買の手数料がかからない）。
 
-    楽天証券・松井証券・三菱UFJ eスマート証券は米ドルMMFの買付・換金の手数料を無料と公表（docs/JOURNAL.md §90 の出典）。
+    楽天証券・松井証券・三菱UFJ eスマート証券は米ドルMMFの買付・換金の手数料を無料と公表（docs/JOURNAL.md §93 の出典）。
     利回りは ^IRX から fee（年率、既定 0.5% と厳しめ）を引いた値。マイナスにはしない。
     """
     cal = p.close.index

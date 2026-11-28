@@ -53,10 +53,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; exit 0; fi
-          since=$(date -u -d "TZ=\"Asia/Tokyo\" $(TZ=Asia/Tokyo date +%F) 15:30" +%Y-%m-%dT%H:%M:%SZ)
+          # 「その日」= 今より前で一番近い 15:30 JST。起動が日付をまたいで遅れても（2026-11-25 の分が翌日の深夜2〜5時に起動した）、
+          # 前の日の分として数える（翌日の 15:30 からと数えると、もう済んでいる日を取り違える）
+          day=$(TZ=Asia/Tokyo date +%F)
+          if [ "$(TZ=Asia/Tokyo date +%H%M)" -lt 1530 ]; then day=$(TZ=Asia/Tokyo date -d "${day} -1 day" +%F); fi
+          since=$(date -u -d "TZ=\"Asia/Tokyo\" ${day} 15:30" +%Y-%m-%dT%H:%M:%SZ)
           n=$(gh api "repos/${{ github.repository }}/actions/workflows/daily.yml/runs?status=success&created=>=${since}&per_page=50" \
                 --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length')
-          echo "今日 ${since} 以降に成功した実行: ${n} 回"
+          echo "${day} の分（${since} 以降）に成功した実行: ${n} 回"
           if [ "${n}" -gt 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
 
   screen:
@@ -113,6 +117,17 @@ jobs:
         run: |
           python -m kabuscout daily $ARGS
           python -m kabuscout site   # 休場日などでスキップした日もページは最新化
+
+      # 自動売買（autotrade）のペーパートレード: 今日の寄付の約定・時価評価・翌朝の注文（docs/AUTOTRADE.md）。
+      # 失敗・時間切れでも本番（スクリーニング・キャッシュの保存・Webの公開）は止めない
+      - name: Auto-trading (paper account)
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PYTHONWARNINGS: ignore
+        run: python -m autotrade daily
 
       # 影のモデル（shadow.yaml）の学習し直しが要るか。要る日だけ、下の shadow ジョブで学習する（Webの公開を遅らせないため）
       - name: Check if shadow models need retraining

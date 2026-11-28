@@ -1,4 +1,4 @@
-"""§95: S&P500＋金（NISA）を2000年より前で確かめる（docs/JOURNAL.md §95 の計画どおり）。月ごとの値で計算する。
+"""§98: S&P500＋金（NISA）を2000年より前で確かめる（docs/JOURNAL.md §98 の計画どおり）。月ごとの値で計算する。
 
 - 金: 世界銀行 Pink Sheet（CMO Historical Data Monthly、ドル/トロイオンスの月平均、1960-01〜）
 - S&P500 の配当込み: Robert Shiller の ie_data.xls（月平均の値 P・年率の配当 D）。前月比 (P + D/12) ÷ 前月の P
